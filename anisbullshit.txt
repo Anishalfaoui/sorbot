@@ -1,24 +1,41 @@
+Ah, I understand now. You want it completely raw, without the grey code boxes or markdown formatting.
+
+Here it is exactly as plain text that you can copy directly:
+
 sorbonne_trading_bot/
 │
-├── data/                   # Store historical CSVs here
-├── models/                 # Store your trained .json models here
+├── ai_engine/              # MICROSERVICE 1: The Brain (Python + XGBoost)
+│   ├── data/               # Store historical CSVs here
+│   ├── models/             # Store your trained .json models here
+│   ├── requirements.txt    # Python dependencies (xgboost, fastapi, yfinance)
+│   ├── main.py             # FastAPI entry point (Returns predictions to Java)
+│   └── ml_core/            # Machine Learning Logic
+│       ├── data_loader.py  # Fetches from yfinance
+│       ├── feature_eng.py  # Calculates RSI, MACD
+│       ├── trainer.py      # Trains XGBoost and saves model
+│       └── predictor.py    # Loads model and predicts live
 │
-├── core/                   # The Brain
-│   ├── data_loader.py      # Fetches from yfinance
-│   ├── feature_eng.py      # Calculates RSI, MACD
-│   ├── trainer.py          # Trains XGBoost and saves model
-│   └── predictor.py        # Loads model and predicts live
+├── backend/                # MICROSERVICE 2: The Core (Java Spring Boot)
+│   ├── pom.xml             # Maven dependencies
+│   └── src/
+│       ├── main/resources/
+│       │   └── application.yml # Database config
+│       └── main/java/com/sorbotrade/
+│           ├── SorbotradeApp.java
+│           ├── controller/ # REST APIs for React
+│           ├── service/    # Logic: Calls AI, executes trades
+│           ├── entity/     # Database tables
+│           └── repository/ # PostgreSQL database interactions
 │
-├── backend/                # The Nervous System
-│   ├── main.py             # FastAPI entry point
-│   ├── portfolio.py        # The "PaperAccount" class (Fake Money)
-│   └── trade_manager.py    # Logic: If Signal > Threshold -> Buy
+├── frontend/               # MICROSERVICE 3: The Face (React)
+│   ├── package.json        # Node dependencies
+│   ├── vite.config.ts      # Build configuration
+│   └── src/
+│       ├── App.tsx         # Main React application
+│       ├── components/     # UI parts: Charts, Stat Cards
+│       ├── pages/          # Views: Dashboard, Settings, History
+│       └── api/            # Axios calls to Spring Boot
 │
-├── frontend/               # The Face
-│   └── dashboard.py        # Streamlit app
-│
-├── database/               # Persistent Storage
-│   └── trades.db           # Stores trade history
-│
-├── requirements.txt        # List of libraries
-└── README.md               # Documentation
+├── docker-compose.yml      # Launches DB, Spring, Python, and React
+├── .gitignore              # Ignores target/, node_modules/, venv/
+└── README.md               # Main documentation for your Sorbonne defense
