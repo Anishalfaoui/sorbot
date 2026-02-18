@@ -1,8 +1,4 @@
-Ah, I understand now. You want it completely raw, without the grey code boxes or markdown formatting.
-
-Here it is exactly as plain text that you can copy directly:
-
-sorbonne_trading_bot/
+sorbot/
 │
 ├── ai_engine/              # MICROSERVICE 1: The Brain (Python + XGBoost)
 │   ├── data/               # Store historical CSVs here
@@ -20,8 +16,8 @@ sorbonne_trading_bot/
 │   └── src/
 │       ├── main/resources/
 │       │   └── application.yml # Database config
-│       └── main/java/com/sorbotrade/
-│           ├── SorbotradeApp.java
+│       └── main/java/com/sorbot/
+│           ├── SorbotApp.java
 │           ├── controller/ # REST APIs for React
 │           ├── service/    # Logic: Calls AI, executes trades
 │           ├── entity/     # Database tables
@@ -38,4 +34,4 @@ sorbonne_trading_bot/
 │
 ├── docker-compose.yml      # Launches DB, Spring, Python, and React
 ├── .gitignore              # Ignores target/, node_modules/, venv/
-└── README.md               # Main documentation for your Sorbonne defense
+└── README.md               # Main documentation
