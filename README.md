@@ -2,7 +2,7 @@
 
 Sorbot is a distributed algorithmic trading system consisting of a Java/Spring Boot backend, a React frontend, and a Python-based machine learning inference engine.
 
-(Figma|https://www.figma.com/make/H0x4DruIOw6sZ7Qwu1e2d3/5-Page-Crypto-Trading-Website?p=f&t=ezv0vYgc4ttAnvFq-0)
+[Figma](https://www.figma.com/make/H0x4DruIOw6sZ7Qwu1e2d3/5-Page-Crypto-Trading-Website?p=f&t=ezv0vYgc4ttAnvFq-0)
 
 ---
 
