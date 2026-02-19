@@ -1,0 +1,10 @@
+# Sorbot AI Engine
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+data/*.csv
+models/*.json
+.mypy_cache/
+.pytest_cache/
