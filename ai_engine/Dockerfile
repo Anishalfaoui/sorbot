@@ -1,4 +1,4 @@
-# ── Sorbot AI Engine ──────────────────────────
+# ── Sorbot AI Engine (Spot Trading) ──────────
 FROM python:3.11-slim
 
 WORKDIR /app

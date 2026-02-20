@@ -1,247 +1,262 @@
 """
-Sorbot AI Engine — FastAPI Application  v2.0
-===============================================
-Multi-timeframe predictions with SL/TP, confluence analysis,
-support/resistance, and best-entry timing for BTC, XAU, EUR.
+Sorbot AI Engine v3.0 — FastAPI Server
+=========================================
+BTC/USD only · Binance Futures · High-conviction trades
 
-Endpoints
----------
-GET  /                      → health check
-GET  /predict?symbol=X      → full prediction + trade plan
-GET  /predict/all           → predictions for every active pair
-GET  /analyze?symbol=X      → deep multi-TF analysis (no trade plan)
-GET  /timeframes            → available timeframes
-POST /train                 → retrain one or all models
-GET  /models                → model metadata for all pairs
-GET  /models/{symbol}       → model metadata for one pair
-GET  /pairs                 → configured trading pairs
-POST /data/refresh          → force re-download OHLCV data
+Endpoints:
+  GET  /              — health check
+  POST /train         — retrain model
+  GET  /predict       — get latest signal
+  POST /trade         — execute trade on Binance
+  GET  /status        — account & position status
+  POST /close         — close open position
+  GET  /model-info    — model metrics & top features
 """
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from config import (
-    TRADING_PAIRS, ACTIVE_SYMBOLS, API_HOST, API_PORT,
-    TIMEFRAMES, PRIMARY_TIMEFRAME, CONFLUENCE_TIMEFRAMES, ENTRY_TIMEFRAME,
-)
-from ml_core.predictor import predict, predict_all, reload_models, get_model_info
-from ml_core.trainer import train_symbol, train_all
-from ml_core.data_loader import fetch_all, fetch_multi_timeframe
+from config import API_HOST, API_PORT, SYMBOL
+from ml_core.data_loader import fetch_all_timeframes, fetch_ohlcv
+from ml_core.feature_eng import build_dataset
+from ml_core.trainer import train_model
+from ml_core.predictor import Predictor
+from ml_core.risk_manager import RiskManager, get_risk_manager
+from ml_core.exchange import BinanceExchange, get_exchange
 
-# ── Logging ───────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s  %(message)s",
+    format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
 )
 logger = logging.getLogger("sorbot.api")
 
+# ── Globals ────────────────────────────────────
+predictor = Predictor()
+risk_mgr = get_risk_manager()
 
-# ── Lifespan ──────────────────────────────────────────────
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Sorbot AI Engine v2.0 starting ...")
+    """Load model on startup."""
     try:
-        reload_models()
-        logger.info("Models loaded for: %s", list(TRADING_PAIRS.keys()))
-    except Exception as exc:
-        logger.warning("Some models not loaded: %s  (run /train first)", exc)
+        predictor.load()
+        logger.info("Model loaded on startup")
+    except FileNotFoundError:
+        logger.warning("No trained model found. Train first via POST /train")
     yield
-    logger.info("Sorbot AI Engine shutting down.")
 
 
-# ── App ───────────────────────────────────────────────────
 app = FastAPI(
-    title="Sorbot AI Engine",
-    description="Multi-timeframe XGBoost prediction microservice — BTC, XAU, EUR",
-    version="2.0.0",
+    title="Sorbot AI Engine v3.0",
+    description="BTC/USD AI Trading Engine — High-conviction signals with Binance Spot execution",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ──────────────────────────────────────────────────────────
-#  ROUTES
-# ──────────────────────────────────────────────────────────
+# ── HEALTH ─────────────────────────────────────
 
-@app.get("/", tags=["Health"])
-def root():
+@app.get("/")
+async def health():
     return {
-        "service": "sorbot-ai-engine",
-        "version": "2.0.0",
-        "status": "ok",
-        "pairs": ACTIVE_SYMBOLS,
-        "primary_timeframe": PRIMARY_TIMEFRAME,
-        "features": [
-            "multi-timeframe confluence",
-            "stop-loss / take-profit proposals",
-            "support & resistance detection",
-            "best entry timing",
-            "ADX / Ichimoku / EMA-200",
-        ],
+        "status": "running",
+        "engine": "Sorbot AI v3.0",
+        "symbol": SYMBOL,
+        "model_loaded": predictor._loaded,
     }
 
 
-@app.get("/pairs", tags=["Config"])
-def list_pairs():
-    """All configured trading pairs with SL/TP multipliers."""
-    return TRADING_PAIRS
+# ── TRAIN ──────────────────────────────────────
 
-
-@app.get("/timeframes", tags=["Config"])
-def list_timeframes():
-    """Available timeframes and their roles."""
-    return {
-        "timeframes": TIMEFRAMES,
-        "primary": PRIMARY_TIMEFRAME,
-        "confluence": CONFLUENCE_TIMEFRAMES,
-        "entry": ENTRY_TIMEFRAME,
-    }
-
-
-# ── Predict ───────────────────────────────────────────────
-
-@app.get("/predict", tags=["Prediction"])
-def get_prediction(symbol: str = Query(..., description="e.g. BTCUSD, XAUUSD, EURUSD")):
-    """
-    Full prediction with trade plan, SL/TP, confluence, timing.
-
-    Response includes:
-    - direction, confidence, probabilities
-    - trade_plan (SL, TP, risk:reward, risk%, reward%)
-    - confluence (multi-TF trend scores)
-    - entry_timing (best entry assessment)
-    - support_resistance (nearest levels)
-    - indicators (RSI, MACD, ADX, Stochastic, BB, EMA-200 …)
-    """
-    sym = symbol.upper().replace("/", "").replace("-", "")
-    if sym not in TRADING_PAIRS:
-        raise HTTPException(400, f"Unknown symbol '{sym}'. Available: {ACTIVE_SYMBOLS}")
+@app.post("/train")
+async def train():
+    """Retrain the model with latest data."""
     try:
-        return predict(sym)
-    except FileNotFoundError as exc:
-        raise HTTPException(503, str(exc))
-    except Exception as exc:
-        logger.error("Prediction error for %s: %s", sym, exc, exc_info=True)
-        raise HTTPException(500, str(exc))
+        logger.info("Starting training...")
+        data = fetch_all_timeframes()
+        htf_data = {"4h": data.get("4h"), "1d": data.get("1d")}
+        dataset = build_dataset(data["1h"], include_target=True, htf_data=htf_data)
+        meta = train_model(dataset)
+
+        # Reload predictor
+        predictor.load()
+
+        return {
+            "status": "trained",
+            "samples": meta["n_samples"],
+            "cv_metrics": meta["cv_metrics"],
+            "final_metrics": meta["final_metrics"],
+            "top_features": meta["top_features"][:10],
+        }
+    except Exception as e:
+        logger.error("Training error: %s", e)
+        raise HTTPException(500, str(e))
 
 
-@app.get("/predict/all", tags=["Prediction"])
-def get_all_predictions():
-    """Full predictions for every active pair."""
-    return predict_all()
+# ── PREDICT ────────────────────────────────────
 
-
-# ── Analyse (lightweight, no model needed) ────────────────
-
-@app.get("/analyze", tags=["Analysis"])
-def analyze_symbol(symbol: str = Query(..., description="e.g. BTCUSD")):
-    """
-    Multi-timeframe technical analysis without the ML model.
-    Useful for a market overview even before training.
-    """
-    sym = symbol.upper().replace("/", "").replace("-", "")
-    if sym not in TRADING_PAIRS:
-        raise HTTPException(400, f"Unknown symbol '{sym}'. Available: {ACTIVE_SYMBOLS}")
-
-    from ml_core.data_loader import fetch_ohlcv
-    from ml_core.feature_eng import detect_sr_levels, _rsi, _macd, _stochastic, _atr_raw, _adx
-    from ml_core.predictor import _tf_trend, _confluence_analysis
+@app.get("/predict")
+async def predict():
+    """Get latest BTC/USD trading signal."""
+    if not predictor._loaded:
+        raise HTTPException(400, "Model not trained. POST /train first.")
 
     try:
-        mtf_data = fetch_multi_timeframe(sym)
-    except Exception as exc:
-        raise HTTPException(500, f"Data fetch failed: {exc}")
+        data = fetch_all_timeframes()
+        htf_data = {"4h": data.get("4h"), "1d": data.get("1d")}
+        dataset = build_dataset(data["1h"], include_target=False, htf_data=htf_data)
+        result = predictor.predict_latest(dataset, data["1h"])
+        return result
+    except Exception as e:
+        logger.error("Prediction error: %s", e)
+        raise HTTPException(500, str(e))
 
-    confluence = _confluence_analysis(mtf_data)
 
-    # Primary candle details
-    primary = mtf_data.get(PRIMARY_TIMEFRAME)
-    if primary is None or primary.empty:
-        raise HTTPException(500, "No primary-TF data")
+# ── TRADE ──────────────────────────────────────
 
-    close = primary["Close"]
-    current_price = round(float(close.iloc[-1]), TRADING_PAIRS[sym]["decimals"])
-    sr_levels = detect_sr_levels(primary["High"], primary["Low"], close)
+@app.post("/trade")
+async def trade():
+    """
+    Get prediction and if high-conviction, execute on Binance.
+    Calculates position size, places market order + SL/TP.
+    """
+    if not predictor._loaded:
+        raise HTTPException(400, "Model not trained. POST /train first.")
 
-    atr = float(_atr_raw(primary["High"], primary["Low"], close).iloc[-1])
-    rsi = float(_rsi(close).iloc[-1])
-    adx = float(_adx(primary["High"], primary["Low"], close).iloc[-1])
+    try:
+        # Get prediction
+        data = fetch_all_timeframes()
+        htf_data = {"4h": data.get("4h"), "1d": data.get("1d")}
+        dataset = build_dataset(data["1h"], include_target=False, htf_data=htf_data)
+        signal = predictor.predict_latest(dataset, data["1h"])
 
-    return {
-        "symbol": sym,
-        "current_price": current_price,
-        "confluence": confluence,
-        "support_resistance": sr_levels[:6],
-        "primary_indicators": {
-            "rsi": round(rsi, 2),
-            "adx": round(adx, 2),
-            "atr": round(atr, TRADING_PAIRS[sym]["decimals"]),
-        },
-        "timeframes_available": list(mtf_data.keys()),
+        if signal["signal"] == "NO_TRADE":
+            return {
+                "action": "NO_TRADE",
+                "reason": signal.get("reject_reason", "Low confidence"),
+                "probability": signal["probability_up"],
+            }
+
+        # Spot trading: only LONG (BUY) is allowed
+        if signal["signal"] == "SHORT":
+            return {
+                "action": "NO_TRADE",
+                "reason": "SHORT signal — spot trading is BUY-only. If holding BTC, consider closing.",
+                "signal": signal,
+            }
+
+        # Check risk
+        can, reason = risk_mgr.can_trade()
+        if not can:
+            return {"action": "BLOCKED", "reason": reason, "signal": signal}
+
+        # Get Binance balance
+        exchange = get_exchange()
+        try:
+            balance = exchange.get_available_balance()
+            risk_mgr.update_balance(balance)
+        except Exception:
+            logger.warning("Could not fetch Binance balance, using configured balance")
+
+        # Calculate position size
+        sizing = risk_mgr.calculate_position_size(
+            entry_price=signal["current_price"],
+            sl_price=signal["sl_price"],
+            signal=signal["signal"],
+        )
+
+        if sizing.get("error"):
+            return {"action": "ERROR", "error": sizing["error"], "signal": signal}
+
+        # Place order
+        order_result = exchange.place_order(
+            side=signal["signal"],
+            qty=sizing["qty_btc"],
+            sl_price=signal["sl_price"],
+            tp_price=signal["tp_price"],
+        )
+
+        if "error" in order_result:
+            return {"action": "ORDER_ERROR", "error": order_result["error"], "signal": signal}
+
+        risk_mgr.register_open()
+
+        return {
+            "action": "TRADE_EXECUTED",
+            "signal": signal,
+            "sizing": sizing,
+            "orders": order_result,
+        }
+
+    except Exception as e:
+        logger.error("Trade error: %s", e)
+        raise HTTPException(500, str(e))
+
+
+# ── STATUS ─────────────────────────────────────
+
+@app.get("/status")
+async def status():
+    """Get account and position status."""
+    result = {
+        "symbol": SYMBOL,
+        "model_loaded": predictor._loaded,
+        "balance": risk_mgr.balance,
+        "open_positions": risk_mgr.open_positions,
     }
 
+    try:
+        exchange = get_exchange()
+        result["binance_balance"] = exchange.get_balance()
+        result["binance_available"] = exchange.get_available_balance()
+        pos = exchange.get_position()
+        result["position"] = pos
+        result["current_price"] = exchange.get_current_price()
+    except Exception as e:
+        result["binance_error"] = str(e)
 
-# ── Train ─────────────────────────────────────────────────
-
-@app.post("/train", tags=["Training"])
-def trigger_training(
-    symbol: Optional[str] = Query(None, description="Train a specific pair, or omit for all"),
-    refresh: bool = Query(False, description="Force-download fresh OHLCV data"),
-):
-    """Train (or retrain) XGBoost models with multi-TF features."""
-    if symbol:
-        sym = symbol.upper().replace("/", "").replace("-", "")
-        if sym not in TRADING_PAIRS:
-            raise HTTPException(400, f"Unknown: {sym}")
-        result = {sym: train_symbol(sym, force_refresh=refresh)}
-    else:
-        result = train_all(force_refresh=refresh)
-
-    reload_models()
-    return {"status": "trained", "results": result}
+    return result
 
 
-# ── Model metadata ────────────────────────────────────────
+# ── CLOSE POSITION ─────────────────────────────
 
-@app.get("/models", tags=["Models"])
-def list_models():
-    return {sym: get_model_info(sym) for sym in ACTIVE_SYMBOLS}
-
-
-@app.get("/models/{symbol}", tags=["Models"])
-def model_detail(symbol: str):
-    sym = symbol.upper().replace("/", "").replace("-", "")
-    info = get_model_info(sym)
-    if info is None:
-        raise HTTPException(404, f"No model trained for {sym}")
-    return info
-
-
-# ── Data ──────────────────────────────────────────────────
-
-@app.post("/data/refresh", tags=["Data"])
-def refresh_data():
-    """Force-download latest OHLCV data for all pairs (primary TF)."""
-    results = {}
-    data = fetch_all(force_refresh=True)
-    for sym, df in data.items():
-        results[sym] = {"rows": len(df), "latest": str(df.index[-1])}
-    return results
+@app.post("/close")
+async def close_position():
+    """Close any open position."""
+    try:
+        exchange = get_exchange()
+        result = exchange.close_position()
+        if result:
+            risk_mgr.register_close(result.get("pnl", 0))
+            return {"action": "CLOSED", "details": result}
+        return {"action": "NO_POSITION", "message": "No open position"}
+    except Exception as e:
+        logger.error("Close error: %s", e)
+        raise HTTPException(500, str(e))
 
 
-# ── Main ──────────────────────────────────────────────────
+# ── MODEL INFO ─────────────────────────────────
+
+@app.get("/model-info")
+async def model_info():
+    """Get trained model metrics and top features."""
+    if not predictor._loaded:
+        raise HTTPException(400, "Model not trained. POST /train first.")
+    return predictor.get_model_info()
+
+
+# ── RUN ────────────────────────────────────────
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host=API_HOST, port=API_PORT, reload=True)

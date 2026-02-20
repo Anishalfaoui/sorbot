@@ -1,25 +1,12 @@
-# ============================================================
-# Sorbot AI Engine - Python Dependencies
-# ============================================================
-# Install: pip install -r requirements.txt
-# ============================================================
-
-# --- Web Framework ---
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-
-# --- Machine Learning ---
-xgboost==2.1.3
-scikit-learn==1.6.1
-
-# --- Data & Indicators ---
-yfinance==0.2.51
-pandas==2.2.3
-numpy==1.26.4
-ta==0.11.0
-
-# --- Utilities ---
-joblib==1.4.2
-python-dotenv==1.0.1
-httpx==0.28.1
-apscheduler==3.10.4
+fastapi>=0.104.0
+uvicorn>=0.24.0
+xgboost>=2.1.0
+scikit-learn>=1.3.0
+yfinance>=1.2.0
+curl_cffi>=0.5.0
+pandas>=2.1.0
+numpy>=1.24.0
+python-dotenv>=1.0.0
+python-binance>=1.0.19
+apscheduler>=3.10.0
+requests>=2.31.0

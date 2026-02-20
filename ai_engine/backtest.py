@@ -1,592 +1,367 @@
 """
-Sorbot AI Engine  -  Backtest Simulation
-==========================================
-Simulates trading from January 1, 2026 to February 19, 2026
-with $10,000 starting capital using the trained XGBoost models.
-
-Walk-forward day-by-day:
-  1. Build features from data available up to that day (no future leak)
-  2. Run model prediction
-  3. Enter BUY/SELL trades with SL/TP
-  4. Track open trades, close on SL/TP hit or after 5 days
-  5. Position sizing: risk 2% of equity per trade
-
-Usage:
-    python backtest.py
+Sorbot AI Engine v3.0 — Backtester
+=====================================
+Walk-forward backtest with confidence filtering and ATR SL/TP.
+Simulates real trading conditions day-by-day:
+  - Train on past data only (no future leak)
+  - Apply confidence gates (65% LONG / 35% SHORT)
+  - ATR-based SL/TP with R:R validation
+  - Position sizing with fixed risk %
+  - Track PnL, win rate, drawdown, profit factor
 """
 
-import json
 import logging
-import sys
-import os
+import time
 from datetime import datetime, timedelta
-from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
 import pandas as pd
-import xgboost as xgb
 
+import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
-from config import (
-    TRADING_PAIRS, MODEL_DIR, PRIMARY_TIMEFRAME,
-    CONFIDENCE_THRESHOLD, MIN_RISK_REWARD, ATR_PERIOD,
-    SL_ATR_MULTIPLIER, TP_ATR_MULTIPLIER,
-)
-from ml_core.data_loader import fetch_ohlcv
-from ml_core.feature_eng import (
-    build_features, build_base_features, detect_sr_levels,
-    _atr_raw, _rsi, _macd, _stochastic,
-)
 
-logging.basicConfig(level=logging.WARNING, format="%(message)s")
+from config import (
+    RISK_PER_TRADE,
+    SL_ATR_MULT, TP_ATR_MULT, MIN_RR_RATIO,
+    CONFIDENCE_LONG, CONFIDENCE_SHORT,
+    LOOKAHEAD_CANDLES,
+)
+LEVERAGE = 1  # Spot trading — no leverage
+from ml_core.data_loader import fetch_ohlcv
+from ml_core.feature_eng import build_dataset, get_atr
+from ml_core.trainer import train_model
+
+import xgboost as xgb
+import json
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger("sorbot.backtest")
 
-# -------------------------------------------------------
-#  CONSTANTS
-# -------------------------------------------------------
-START_DATE = pd.Timestamp("2025-01-01")
-END_DATE   = pd.Timestamp("2026-02-19")
-INITIAL_EQUITY = 10_000.0
-RISK_PER_TRADE  = 0.05       # 5% of equity risked per trade
-MAX_HOLD_DAYS   = 5           # close after 5 bars if SL/TP not hit
-MAX_POSITION_PCT = 0.50       # max 50% of equity in one position
-LABEL_MAP = {0: "SELL", 1: "HOLD", 2: "BUY"}
 
-
-@dataclass
-class Trade:
-    symbol: str
-    direction: str          # "BUY" or "SELL"
-    entry_price: float
-    stop_loss: float
-    take_profit: float
-    position_size: float    # units of the asset
-    entry_date: pd.Timestamp
-    confidence: float
-    bars_held: int = 0
-    exit_price: Optional[float] = None
-    exit_date: Optional[pd.Timestamp] = None
-    exit_reason: str = ""
-    pnl: float = 0.0
-
-
-# -------------------------------------------------------
-#  LOAD MODELS
-# -------------------------------------------------------
-def load_model(symbol: str):
-    """Load xgb.Booster + training meta."""
-    model_path = MODEL_DIR / f"{symbol}_xgb.json"
-    meta_path  = MODEL_DIR / f"{symbol}_meta.json"
-    if not model_path.exists():
-        return None, None
-    booster = xgb.Booster()
-    booster.load_model(str(model_path))
-    meta = {}
-    if meta_path.exists():
-        meta = json.loads(meta_path.read_text())
-    return booster, meta
-
-
-# -------------------------------------------------------
-#  COMPUTE SL / TP
-# -------------------------------------------------------
-def compute_sl_tp(symbol, direction, price, atr_val, sr_levels):
-    """Simplified version of predictor._compute_sl_tp."""
-    pair = TRADING_PAIRS[symbol]
-    sl_mult = pair.get("default_sl_atr_mult", SL_ATR_MULTIPLIER)
-    tp_mult = pair.get("default_tp_atr_mult", TP_ATR_MULTIPLIER)
-
-    atr_sl = atr_val * sl_mult
-    atr_tp = atr_val * tp_mult
-
-    supports    = sorted([l for l in sr_levels if l["type"] == "support"],
-                         key=lambda x: abs(x["price"] - price))
-    resistances = sorted([l for l in sr_levels if l["type"] == "resistance"],
-                         key=lambda x: abs(x["price"] - price))
-
-    if direction == "BUY":
-        sl_atr = price - atr_sl
-        sl_sr  = supports[0]["price"] * 0.998 if supports else sl_atr
-        sl = max(sl_atr, sl_sr)        # tighter SL
-        tp_atr = price + atr_tp
-        tp_sr  = resistances[0]["price"] * 0.998 if resistances else tp_atr
-        tp = min(tp_atr, tp_sr)
-    elif direction == "SELL":
-        sl_atr = price + atr_sl
-        sl_sr  = resistances[0]["price"] * 1.002 if resistances else sl_atr
-        sl = min(sl_atr, sl_sr)
-        tp_atr = price - atr_tp
-        tp_sr  = supports[0]["price"] * 1.002 if supports else tp_atr
-        tp = max(tp_atr, tp_sr)
-    else:
-        return None, None
-
-    # Validate risk:reward
-    if direction == "BUY":
-        risk   = price - sl
-        reward = tp - price
-    else:
-        risk   = sl - price
-        reward = price - tp
-
-    if risk <= 0:
-        return None, None
-    rr = reward / risk
-    if rr < MIN_RISK_REWARD:
-        return None, None
-
-    return sl, tp
-
-
-# -------------------------------------------------------
-#  GENERATE SIGNAL FOR ONE DAY
-# -------------------------------------------------------
-def generate_signal(symbol, booster, meta, daily_data, weekly_data, sim_date):
+def run_backtest(
+    initial_balance: float = 500.0,
+    risk_pct: float = RISK_PER_TRADE,
+    lookback_days: int = 90,
+    retrain_every: int = 168,  # retrain every 168 bars (1 week)
+) -> dict:
     """
-    Build features from data up to sim_date, run model prediction.
-    Returns (direction, confidence, sl, tp, current_price) or None.
+    Walk-forward backtest.
+
+    Strategy:
+      1. Train model on data up to current point
+      2. Predict next bar
+      3. If high confidence -> open position with SL/TP
+      4. Track until SL/TP hit or LOOKAHEAD_CANDLES pass
+      5. Move forward and repeat
     """
-    # Slice data up to sim_date (inclusive)
-    df_daily = daily_data.loc[daily_data.index <= sim_date].copy()
-    if len(df_daily) < 210:   # need 200+ bars for EMA-200 warmup
-        return None
+    t0 = time.time()
 
-    # Weekly data up to sim_date
-    htf_data = {}
-    if weekly_data is not None and not weekly_data.empty:
-        df_w = weekly_data.loc[weekly_data.index <= sim_date].copy()
-        if len(df_w) > 20:
-            htf_data["1w"] = df_w
+    # Fetch all data
+    logger.info("Fetching historical data...")
+    df_1h = fetch_ohlcv("1h")
+    df_1d = fetch_ohlcv("1d")
 
-    # Build features
-    try:
-        features = build_features(df_daily, include_target=False,
-                                  htf_dataframes=htf_data if htf_data else None)
-    except Exception:
-        return None
+    # Strip timezone
+    if df_1h.index.tz:
+        df_1h.index = df_1h.index.tz_localize(None)
+    if df_1d.index.tz:
+        df_1d.index = df_1d.index.tz_localize(None)
 
-    if features.empty:
-        return None
+    n_total = len(df_1h)
+    min_train = 500  # minimum bars to train on
+    start_idx = min_train
 
-    X = features.iloc[[-1]].copy()
+    logger.info("Total 1h bars: %d, starting backtest at bar %d", n_total, start_idx)
 
-    # Align columns to training order
-    if "feature_names" in meta:
-        for col in meta["feature_names"]:
-            if col not in X.columns:
-                X[col] = 0.0
-        X = X[meta["feature_names"]]
+    # State
+    balance = initial_balance
+    trades = []
+    equity_curve = []
+    in_trade = False
+    current_trade = None
+    booster = None
+    feature_names = []
+    last_train_bar = 0
 
-    # Predict
-    dmat = xgb.DMatrix(X)
-    proba = booster.predict(dmat)[0]
-    class_idx = int(np.argmax(proba))
-    confidence = float(proba[class_idx])
+    for i in range(start_idx, n_total):
+        current_time = df_1h.index[i]
 
-    if confidence < CONFIDENCE_THRESHOLD:
-        direction = "HOLD"
-    else:
-        direction = LABEL_MAP[class_idx]
+        # ── Retrain periodically ──────────────
+        if booster is None or (i - last_train_bar) >= retrain_every:
+            train_slice = df_1h.iloc[:i]
+            # Build HTF data
+            daily_mask = df_1d.index <= current_time
+            htf_data = {"1d": df_1d[daily_mask]}
 
-    if direction == "HOLD":
-        return None   # no trade
-
-    current_price = float(df_daily["Close"].iloc[-1])
-
-    # ATR for SL/TP
-    atr_val = float(_atr_raw(
-        df_daily["High"], df_daily["Low"], df_daily["Close"]
-    ).iloc[-1])
-
-    # S/R levels
-    sr = detect_sr_levels(df_daily["High"], df_daily["Low"], df_daily["Close"])
-
-    sl, tp = compute_sl_tp(symbol, direction, current_price, atr_val, sr)
-    if sl is None:
-        return None  # R:R failed
-
-    return {
-        "direction": direction,
-        "confidence": confidence,
-        "price": current_price,
-        "sl": sl,
-        "tp": tp,
-    }
-
-
-# -------------------------------------------------------
-#  MAIN SIMULATION
-# -------------------------------------------------------
-def run_backtest():
-    print("=" * 70)
-    print("  SORBOT AI ENGINE  -  BACKTEST SIMULATION")
-    print("  Period: January 1, 2026  -->  February 19, 2026")
-    print(f"  Starting Capital: ${INITIAL_EQUITY:,.2f}")
-    print(f"  Risk per trade: {RISK_PER_TRADE*100:.0f}% of equity")
-    print("=" * 70)
-
-    # ----- 1. Load models -----
-    models = {}
-    metas  = {}
-    for sym in TRADING_PAIRS:
-        b, m = load_model(sym)
-        if b is None:
-            print(f"  [!] No model for {sym} - skipping")
-            continue
-        models[sym] = b
-        metas[sym]  = m
-        print(f"  Model loaded: {sym}  (accuracy={m.get('accuracy','?')}, "
-              f"features={m.get('n_features','?')})")
-
-    if not models:
-        print("No models found. Train models first.")
-        return
-
-    # ----- 2. Fetch data -----
-    print("\nFetching historical data...")
-    daily_data = {}
-    weekly_data = {}
-    for sym in models:
-        try:
-            daily_data[sym]  = fetch_ohlcv(sym, "1d", force_refresh=True)
-            weekly_data[sym] = fetch_ohlcv(sym, "1w", force_refresh=True)
-        except Exception as e:
-            print(f"  [!] Data fetch failed for {sym}: {e}")
-
-    # Normalize indices to tz-naive for consistent comparison
-    for sym in list(daily_data.keys()):
-        if daily_data[sym].index.tz is not None:
-            daily_data[sym].index = daily_data[sym].index.tz_localize(None)
-        if weekly_data[sym].index.tz is not None:
-            weekly_data[sym].index = weekly_data[sym].index.tz_localize(None)
-
-    # ----- 3. Build trading calendar -----
-    # Use BTCUSD daily index as the master calendar (crypto trades every day)
-    all_dates = set()
-    for sym in daily_data:
-        mask = (daily_data[sym].index >= START_DATE) & (daily_data[sym].index <= END_DATE)
-        all_dates |= set(daily_data[sym].index[mask])
-    trading_days = sorted(all_dates)
-
-    if not trading_days:
-        print("No trading days found in the simulation period!")
-        return
-
-    print(f"  Trading days: {len(trading_days)}  "
-          f"({trading_days[0].strftime('%Y-%m-%d')} to {trading_days[-1].strftime('%Y-%m-%d')})")
-
-    # ----- 4. Walk-forward simulation -----
-    equity = INITIAL_EQUITY
-    equity_curve = [(START_DATE, equity)]
-    open_trades: dict[str, Trade] = {}
-    closed_trades: list[Trade] = []
-    total_signals = 0
-    daily_log = []
-
-    for day in trading_days:
-        day_events = []
-
-        # -- 4a. Update open trades (check SL/TP/expiry) --
-        symbols_to_close = []
-        for sym, trade in open_trades.items():
-            if sym not in daily_data:
-                continue
-            df = daily_data[sym]
-            if day not in df.index:
-                trade.bars_held += 1
+            dataset = build_dataset(train_slice, include_target=True, htf_data=htf_data)
+            if len(dataset) < 200:
                 continue
 
-            day_row = df.loc[day]
-            day_high = float(day_row["High"])
-            day_low  = float(day_row["Low"])
-            day_close = float(day_row["Close"])
-            trade.bars_held += 1
+            try:
+                # Quick train (fewer estimators for backtest speed)
+                from config import XGB_PARAMS
+                params = {
+                    "max_depth": XGB_PARAMS["max_depth"],
+                    "learning_rate": 0.02,  # slightly faster for backtest
+                    "subsample": XGB_PARAMS["subsample"],
+                    "colsample_bytree": XGB_PARAMS["colsample_bytree"],
+                    "min_child_weight": XGB_PARAMS["min_child_weight"],
+                    "gamma": XGB_PARAMS["gamma"],
+                    "reg_alpha": XGB_PARAMS["reg_alpha"],
+                    "reg_lambda": XGB_PARAMS["reg_lambda"],
+                    "objective": "binary:logistic",
+                    "eval_metric": "logloss",
+                    "seed": 42,
+                    "verbosity": 0,
+                }
+                feature_cols = [c for c in dataset.columns if c != "target"]
+                X = dataset[feature_cols].values
+                y = dataset["target"].values.astype(int)
 
-            closed = False
+                # Dynamic class balance
+                n_pos = y.sum()
+                n_neg = len(y) - n_pos
+                params["scale_pos_weight"] = n_neg / max(n_pos, 1)
 
-            if trade.direction == "BUY":
-                # Check SL first (worst case)
-                if day_low <= trade.stop_loss:
-                    trade.exit_price = trade.stop_loss
-                    trade.exit_reason = "STOP-LOSS"
-                    closed = True
-                elif day_high >= trade.take_profit:
-                    trade.exit_price = trade.take_profit
-                    trade.exit_reason = "TAKE-PROFIT"
-                    closed = True
-                elif trade.bars_held >= MAX_HOLD_DAYS:
-                    trade.exit_price = day_close
-                    trade.exit_reason = "MAX-HOLD (5d)"
-                    closed = True
+                # Train/eval split
+                split_idx = int(len(X) * 0.85)
+                dtrain = xgb.DMatrix(X[:split_idx], label=y[:split_idx], feature_names=feature_cols)
+                deval = xgb.DMatrix(X[split_idx:], label=y[split_idx:], feature_names=feature_cols)
 
-            elif trade.direction == "SELL":
-                if day_high >= trade.stop_loss:
-                    trade.exit_price = trade.stop_loss
-                    trade.exit_reason = "STOP-LOSS"
-                    closed = True
-                elif day_low <= trade.take_profit:
-                    trade.exit_price = trade.take_profit
-                    trade.exit_reason = "TAKE-PROFIT"
-                    closed = True
-                elif trade.bars_held >= MAX_HOLD_DAYS:
-                    trade.exit_price = day_close
-                    trade.exit_reason = "MAX-HOLD (5d)"
-                    closed = True
-
-            if closed:
-                trade.exit_date = day
-                if trade.direction == "BUY":
-                    trade.pnl = trade.position_size * (trade.exit_price - trade.entry_price)
-                else:
-                    trade.pnl = trade.position_size * (trade.entry_price - trade.exit_price)
-                equity += trade.pnl
-                symbols_to_close.append(sym)
-
-                pnl_pct = (trade.pnl / equity) * 100
-                emoji = "+" if trade.pnl >= 0 else ""
-                day_events.append(
-                    f"  CLOSE {sym} {trade.direction} @ {trade.exit_price:,.2f}  "
-                    f"[{trade.exit_reason}]  PnL: {emoji}${trade.pnl:,.2f} ({emoji}{pnl_pct:.2f}%)  "
-                    f"held {trade.bars_held}d"
+                booster = xgb.train(
+                    params, dtrain,
+                    num_boost_round=400,
+                    evals=[(deval, "val")],
+                    early_stopping_rounds=30,
+                    verbose_eval=False,
                 )
-
-        for sym in symbols_to_close:
-            closed_trades.append(open_trades.pop(sym))
-
-        # -- 4b. Generate new signals --
-        for sym in models:
-            if sym in open_trades:
-                continue  # already in a position
-            if sym not in daily_data:
-                continue
-            if day not in daily_data[sym].index:
+                feature_names = feature_cols
+                last_train_bar = i
+            except Exception as e:
+                logger.warning("Train error at bar %d: %s", i, e)
                 continue
 
-            sig = generate_signal(
-                sym, models[sym], metas[sym],
-                daily_data[sym], weekly_data.get(sym),
-                day
-            )
-            total_signals += 1
+        # ── Check if in trade: resolve SL/TP ──
+        if in_trade and current_trade:
+            bar = df_1h.iloc[i]
+            ct = current_trade
 
-            if sig is None:
-                continue
+            # Check SL hit
+            sl_hit = False
+            tp_hit = False
+            if ct["side"] == "LONG":
+                if bar["Low"] <= ct["sl"]:
+                    sl_hit = True
+                if bar["High"] >= ct["tp"]:
+                    tp_hit = True
+            else:  # SHORT
+                if bar["High"] >= ct["sl"]:
+                    sl_hit = True
+                if bar["Low"] <= ct["tp"]:
+                    tp_hit = True
 
-            # Position sizing: risk 2% of equity
-            direction = sig["direction"]
-            entry_price = sig["price"]
-            sl = sig["sl"]
-            tp = sig["tp"]
+            # Time expiry
+            bars_in_trade = i - ct["entry_bar"]
+            expired = bars_in_trade >= max(LOOKAHEAD_CANDLES * 3, 12)
 
-            risk_per_unit = abs(entry_price - sl)
-            if risk_per_unit <= 0:
-                continue
+            if sl_hit or tp_hit or expired:
+                if tp_hit:
+                    exit_price = ct["tp"]
+                    outcome = "TP"
+                elif sl_hit:
+                    exit_price = ct["sl"]
+                    outcome = "SL"
+                else:
+                    exit_price = bar["Close"]
+                    outcome = "EXPIRED"
 
-            risk_amount = equity * RISK_PER_TRADE
-            position_size = risk_amount / risk_per_unit
+                # Calculate PnL
+                if ct["side"] == "LONG":
+                    pnl_pct = (exit_price - ct["entry"]) / ct["entry"]
+                else:
+                    pnl_pct = (ct["entry"] - exit_price) / ct["entry"]
 
-            # Cap position value at 50% of equity to avoid over-leverage
-            position_value = position_size * entry_price
-            max_position = equity * MAX_POSITION_PCT
-            if position_value > max_position:
-                position_size = max_position / entry_price
+                pnl_usd = pnl_pct * ct["notional"]
+                balance += pnl_usd
 
-            trade = Trade(
-                symbol=sym,
-                direction=direction,
-                entry_price=entry_price,
-                stop_loss=round(sl, TRADING_PAIRS[sym]["decimals"]),
-                take_profit=round(tp, TRADING_PAIRS[sym]["decimals"]),
-                position_size=position_size,
-                entry_date=day,
-                confidence=sig["confidence"],
-            )
-            open_trades[sym] = trade
+                trade_record = {
+                    "entry_time": str(ct["entry_time"]),
+                    "exit_time": str(current_time),
+                    "side": ct["side"],
+                    "entry": ct["entry"],
+                    "exit": round(exit_price, 2),
+                    "sl": ct["sl"],
+                    "tp": ct["tp"],
+                    "pnl_usd": round(pnl_usd, 2),
+                    "pnl_pct": round(pnl_pct * 100, 3),
+                    "outcome": outcome,
+                    "balance_after": round(balance, 2),
+                    "confidence": ct["confidence"],
+                }
+                trades.append(trade_record)
+                in_trade = False
+                current_trade = None
 
-            day_events.append(
-                f"  OPEN  {sym} {direction} @ {entry_price:,.2f}  "
-                f"SL={trade.stop_loss:,.2f}  TP={trade.take_profit:,.2f}  "
-                f"conf={sig['confidence']*100:.1f}%  size={position_size:.4f}"
-            )
+        # ── Generate signal if not in trade ───
+        if not in_trade and booster is not None:
+            # Build features for current bar
+            slice_data = df_1h.iloc[max(0, i - 250):i + 1]
+            daily_mask = df_1d.index <= current_time
+            htf_data = {"1d": df_1d[daily_mask]}
 
-        equity_curve.append((day, equity))
+            try:
+                feats = build_dataset(slice_data, include_target=False, htf_data=htf_data)
+                if feats.empty:
+                    equity_curve.append({"time": str(current_time), "balance": round(balance, 2)})
+                    continue
 
-        if day_events:
-            daily_log.append((day, equity, day_events))
+                # Align to trained features
+                for col in feature_names:
+                    if col not in feats.columns:
+                        feats[col] = 0
+                X_pred = feats[feature_names].iloc[[-1]].values
+                dmat = xgb.DMatrix(X_pred, feature_names=feature_names)
+                prob = float(booster.predict(dmat)[0])
 
-    # -- Close any remaining open trades at last available price --
-    for sym, trade in list(open_trades.items()):
-        df = daily_data[sym]
-        last_price = float(df["Close"].iloc[-1])
-        trade.exit_price = last_price
-        trade.exit_date = trading_days[-1]
-        trade.exit_reason = "END-OF-SIM"
-        if trade.direction == "BUY":
-            trade.pnl = trade.position_size * (last_price - trade.entry_price)
-        else:
-            trade.pnl = trade.position_size * (trade.entry_price - last_price)
-        equity += trade.pnl
-        closed_trades.append(trade)
-        daily_log.append((trading_days[-1], equity,
-            [f"  CLOSE {sym} {trade.direction} @ {last_price:,.2f} [END-OF-SIM]  "
-             f"PnL: ${trade.pnl:,.2f}"]))
+                # Confidence gates
+                signal = None
+                confidence = 0.5
+                if prob >= CONFIDENCE_LONG:
+                    signal = "LONG"
+                    confidence = prob
+                elif prob <= CONFIDENCE_SHORT:
+                    signal = "SHORT"
+                    confidence = 1.0 - prob
 
-    equity_curve.append((END_DATE, equity))
+                if signal:
+                    bar = df_1h.iloc[i]
+                    entry_price = bar["Close"]
 
-    # -------------------------------------------------------
-    #  PRINT RESULTS
-    # -------------------------------------------------------
-    print("\n" + "=" * 70)
-    print("  TRADE LOG")
-    print("=" * 70)
-    for day, eq, events in daily_log:
-        print(f"\n  {day.strftime('%Y-%m-%d')}  |  Equity: ${eq:,.2f}")
-        for e in events:
-            print(e)
+                    # ATR
+                    atr_val = float(get_atr(
+                        df_1h["High"].iloc[max(0, i - 20):i + 1],
+                        df_1h["Low"].iloc[max(0, i - 20):i + 1],
+                        df_1h["Close"].iloc[max(0, i - 20):i + 1],
+                    ).iloc[-1])
 
-    # ---- Per-symbol breakdown ----
-    print("\n" + "=" * 70)
-    print("  PER-SYMBOL BREAKDOWN")
-    print("=" * 70)
-    for sym in TRADING_PAIRS:
-        sym_trades = [t for t in closed_trades if t.symbol == sym]
-        if not sym_trades:
-            print(f"\n  {sym}: No trades taken")
-            continue
-        wins = [t for t in sym_trades if t.pnl > 0]
-        losses = [t for t in sym_trades if t.pnl <= 0]
-        total_pnl = sum(t.pnl for t in sym_trades)
-        win_rate = len(wins) / len(sym_trades) * 100 if sym_trades else 0
+                    sl_dist = atr_val * SL_ATR_MULT
+                    tp_dist = atr_val * TP_ATR_MULT
+                    rr = tp_dist / sl_dist if sl_dist > 0 else 0
 
-        print(f"\n  {sym}:")
-        print(f"    Trades: {len(sym_trades)}  |  Wins: {len(wins)}  |  Losses: {len(losses)}  |  Win Rate: {win_rate:.1f}%")
-        print(f"    Total PnL: ${total_pnl:,.2f}")
-        if wins:
-            print(f"    Avg Win:  ${sum(t.pnl for t in wins)/len(wins):,.2f}")
-        if losses:
-            print(f"    Avg Loss: ${sum(t.pnl for t in losses)/len(losses):,.2f}")
-        print(f"    Trades:")
-        for t in sym_trades:
-            pnl_sign = "+" if t.pnl >= 0 else ""
-            print(f"      {t.entry_date.strftime('%m/%d')} {t.direction:4s} "
-                  f"@ {t.entry_price:>12,.2f} -> {t.exit_price:>12,.2f}  "
-                  f"[{t.exit_reason:12s}]  {pnl_sign}${t.pnl:>10,.2f}  "
-                  f"({t.bars_held}d, {t.confidence*100:.0f}%)")
+                    if rr >= MIN_RR_RATIO:
+                        if signal == "LONG":
+                            sl_price = entry_price - sl_dist
+                            tp_price = entry_price + tp_dist
+                        else:
+                            sl_price = entry_price + sl_dist
+                            tp_price = entry_price - tp_dist
 
-    # ---- Summary ----
-    total_pnl = equity - INITIAL_EQUITY
-    total_return = (total_pnl / INITIAL_EQUITY) * 100
-    total_trades = len(closed_trades)
-    winning = [t for t in closed_trades if t.pnl > 0]
-    losing  = [t for t in closed_trades if t.pnl <= 0]
-    win_rate = len(winning) / total_trades * 100 if total_trades else 0
+                        # Position sizing
+                        risk_usd = balance * risk_pct
+                        qty = risk_usd / sl_dist if sl_dist > 0 else 0
+                        notional = qty * entry_price
+
+                        # Cap at leverage limit
+                        max_notional = balance * LEVERAGE * 0.95
+                        if notional > max_notional:
+                            qty = max_notional / entry_price
+                            notional = qty * entry_price
+
+                        if qty > 0 and balance > 10:
+                            current_trade = {
+                                "entry_time": current_time,
+                                "entry_bar": i,
+                                "side": signal,
+                                "entry": entry_price,
+                                "sl": round(sl_price, 2),
+                                "tp": round(tp_price, 2),
+                                "qty": qty,
+                                "notional": notional,
+                                "confidence": round(confidence, 4),
+                            }
+                            in_trade = True
+
+            except Exception as e:
+                pass
+
+        # Record equity
+        if i % 24 == 0:  # daily equity snapshot
+            equity_curve.append({"time": str(current_time), "balance": round(balance, 2)})
+
+    # ── Results ────────────────────────────────
+    elapsed = round(time.time() - t0, 1)
+    n_trades = len(trades)
+    wins = [t for t in trades if t["pnl_usd"] > 0]
+    losses = [t for t in trades if t["pnl_usd"] <= 0]
+    win_rate = len(wins) / n_trades if n_trades > 0 else 0
+
+    total_pnl = sum(t["pnl_usd"] for t in trades)
+    gross_profit = sum(t["pnl_usd"] for t in wins) if wins else 0
+    gross_loss = abs(sum(t["pnl_usd"] for t in losses)) if losses else 1
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
 
     # Max drawdown
-    peak = INITIAL_EQUITY
+    peak = initial_balance
     max_dd = 0
-    for _, eq in equity_curve:
-        if eq > peak:
-            peak = eq
-        dd = (peak - eq) / peak * 100
-        if dd > max_dd:
-            max_dd = dd
+    running = initial_balance
+    for t in trades:
+        running += t["pnl_usd"]
+        peak = max(peak, running)
+        dd = (peak - running) / peak
+        max_dd = max(max_dd, dd)
 
-    # Profit factor
-    gross_profit = sum(t.pnl for t in winning) if winning else 0
-    gross_loss   = abs(sum(t.pnl for t in losing)) if losing else 1
-
-    print("\n" + "=" * 70)
-    print("  FINAL RESULTS")
-    print("=" * 70)
-    print(f"""
-  Starting Capital:   ${INITIAL_EQUITY:>12,.2f}
-  Final Equity:       ${equity:>12,.2f}
-  -----------------------------------------------
-  Net P&L:            ${total_pnl:>12,.2f}  ({total_return:+.2f}%)
-  -----------------------------------------------
-  Total Trades:       {total_trades:>12d}
-  Winning Trades:     {len(winning):>12d}
-  Losing Trades:      {len(losing):>12d}
-  Win Rate:           {win_rate:>11.1f}%
-  -----------------------------------------------
-  Gross Profit:       ${gross_profit:>12,.2f}
-  Gross Loss:         ${gross_loss:>12,.2f}
-  Profit Factor:      {gross_profit/gross_loss if gross_loss else float('inf'):>12.2f}
-  -----------------------------------------------
-  Max Drawdown:       {max_dd:>11.2f}%
-  Avg Win:            ${gross_profit/len(winning) if winning else 0:>12,.2f}
-  Avg Loss:           ${-gross_loss/len(losing) if losing else 0:>12,.2f}
-  -----------------------------------------------
-  Period:             {len(trading_days)} trading days
-  Signals Evaluated:  {total_signals}
-""")
-
-    # ---- Equity curve (ASCII) ----
-    print("  EQUITY CURVE")
-    print("  " + "-" * 50)
-    eq_vals = [eq for _, eq in equity_curve if eq > 0]
-    if eq_vals:
-        mn, mx = min(eq_vals), max(eq_vals)
-        rng = mx - mn if mx != mn else 1
-        step = max(1, len(equity_curve) // 25)
-        for i in range(0, len(equity_curve), step):
-            dt, eq = equity_curve[i]
-            bar_len = int((eq - mn) / rng * 40)
-            marker = "#" * max(bar_len, 1)
-            print(f"  {dt.strftime('%m/%d')} ${eq:>10,.2f} |{marker}")
-    print("  " + "-" * 50)
-
-    print("\n  NOTE: This simulation uses the currently trained model.")
-    print("  The model was trained on data that includes this period,")
-    print("  so results may exhibit look-ahead bias. A true out-of-sample")
-    print("  backtest would require retraining the model before Jan 1.\n")
-
-    return {
-        "risk": RISK_PER_TRADE,
-        "equity": equity,
-        "pnl": total_pnl,
-        "return": total_return,
-        "trades": total_trades,
-        "win_rate": win_rate,
-        "pf": gross_profit / gross_loss if gross_loss else float('inf'),
-        "max_dd": max_dd,
+    results = {
+        "initial_balance": initial_balance,
+        "final_balance": round(balance, 2),
+        "total_pnl": round(total_pnl, 2),
+        "total_return_pct": round((balance / initial_balance - 1) * 100, 2),
+        "n_trades": n_trades,
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": round(win_rate * 100, 1),
+        "profit_factor": round(profit_factor, 2),
+        "max_drawdown_pct": round(max_dd * 100, 2),
+        "avg_win": round(np.mean([t["pnl_usd"] for t in wins]), 2) if wins else 0,
+        "avg_loss": round(np.mean([t["pnl_usd"] for t in losses]), 2) if losses else 0,
+        "risk_pct": round(risk_pct * 100, 1),
+        "leverage": LEVERAGE,
+        "elapsed_sec": elapsed,
+        "trades": trades,
+        "equity_curve": equity_curve,
     }
 
+    return results
 
-def run_comparison():
-    """Run backtests at multiple risk levels for comparison."""
-    global RISK_PER_TRADE, MAX_POSITION_PCT
 
-    risk_levels = [0.02, 0.05, 0.10, 0.15]
-    results_summary = []
+def print_results(r: dict):
+    """Pretty print backtest results."""
+    print("\n" + "=" * 60)
+    print("  SORBOT v3.0 BACKTEST RESULTS")
+    print("=" * 60)
+    print(f"  Initial balance:  ${r['initial_balance']:.2f}")
+    print(f"  Final balance:    ${r['final_balance']:.2f}")
+    print(f"  Total PnL:        ${r['total_pnl']:.2f} ({r['total_return_pct']:+.2f}%)")
+    print(f"  Trades:           {r['n_trades']} ({r['wins']}W / {r['losses']}L)")
+    print(f"  Win rate:         {r['win_rate']:.1f}%")
+    print(f"  Profit factor:    {r['profit_factor']:.2f}")
+    print(f"  Max drawdown:     {r['max_drawdown_pct']:.2f}%")
+    print(f"  Avg win:          ${r['avg_win']:.2f}")
+    print(f"  Avg loss:         ${r['avg_loss']:.2f}")
+    print(f"  Risk per trade:   {r['risk_pct']:.1f}%")
+    print(f"  Leverage:         {r['leverage']}x")
+    print(f"  Elapsed:          {r['elapsed_sec']:.1f}s")
+    print("=" * 60)
 
-    for risk in risk_levels:
-        RISK_PER_TRADE = risk
-        MAX_POSITION_PCT = min(0.30 + risk * 5, 0.80)  # scale position cap with risk
-        print(f"\n{'#' * 70}")
-        print(f"#  RUNNING SIMULATION  -  RISK = {risk*100:.0f}% per trade")
-        print(f"{'#' * 70}")
-        result = run_backtest()
-        if result:
-            results_summary.append(result)
-
-    # ---- Side-by-side comparison ----
-    if results_summary:
-        print("\n" + "=" * 70)
-        print("  RISK LEVEL COMPARISON")
-        print("=" * 70)
-        print(f"  {'Risk':>6s}  {'Final $':>12s}  {'P&L':>10s}  {'Return':>8s}  "
-              f"{'Trades':>7s}  {'WinRate':>8s}  {'PF':>6s}  {'MaxDD':>7s}")
-        print("  " + "-" * 68)
-        for r in results_summary:
-            print(f"  {r['risk']*100:>5.0f}%  ${r['equity']:>11,.2f}  "
-                  f"${r['pnl']:>9,.2f}  {r['return']:>+7.2f}%  "
-                  f"{r['trades']:>7d}  {r['win_rate']:>7.1f}%  "
-                  f"{r['pf']:>5.2f}  {r['max_dd']:>6.2f}%")
-        print()
+    if r["trades"]:
+        print("\n  Last 10 trades:")
+        print(f"  {'Time':<20} {'Side':<6} {'Entry':>10} {'Exit':>10} {'PnL':>8} {'Out':<8}")
+        for t in r["trades"][-10:]:
+            print(f"  {t['entry_time'][:19]:<20} {t['side']:<6} {t['entry']:>10.2f} {t['exit']:>10.2f} {t['pnl_usd']:>+8.2f} {t['outcome']:<8}")
 
 
 if __name__ == "__main__":
-    run_comparison()
+    results = run_backtest(
+        initial_balance=500.0,
+        risk_pct=0.03,
+    )
+    print_results(results)

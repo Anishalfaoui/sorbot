@@ -1,18 +1,18 @@
 """
-Sorbot AI Engine — Live Predictor  v2.0
-=========================================
-Multi-timeframe confluence, Stop-Loss / Take-Profit proposals,
-support/resistance levels, best-timing analysis, and full trade plan.
-
-Uses xgboost.Booster (native API) for inference to avoid scikit-learn
-wrapper compatibility issues.
+Sorbot AI Engine v3.0 — Predictor (Enhanced)
+===============================================
+Enriched predictions with:
+  - Full market analysis (regime, trend, indicators)
+  - Multi-timeframe alignment assessment
+  - Support / Resistance levels
+  - Indicator-by-indicator breakdown
+  - Human-readable CONCLUSION message
+  - Trade-level SL/TP with ATR-based risk
 """
 
 import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -21,457 +21,432 @@ import xgboost as xgb
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
-    MODEL_DIR, TRADING_PAIRS, CONFIDENCE_THRESHOLD,
-    PRIMARY_TIMEFRAME, CONFLUENCE_TIMEFRAMES, ENTRY_TIMEFRAME,
-    SL_ATR_MULTIPLIER, TP_ATR_MULTIPLIER, MIN_RISK_REWARD,
-    ATR_PERIOD,
+    MODEL_DIR,
+    CONFIDENCE_LONG, CONFIDENCE_SHORT,
+    SL_ATR_MULT, TP_ATR_MULT, MIN_RR_RATIO,
 )
-from ml_core.data_loader import fetch_ohlcv, fetch_multi_timeframe
-from ml_core.feature_eng import (
-    build_features, build_base_features, detect_sr_levels,
-    _atr_raw, _rsi, _macd, _stochastic,
-)
+import requests
+
+from ml_core.feature_eng import get_atr, get_market_analysis
 
 logger = logging.getLogger("sorbot.predictor")
 
-LABEL_MAP = {0: "SELL", 1: "HOLD", 2: "BUY"}
 
-# ── Model cache ──────────────────────────────────────────
-_model_cache: dict[str, xgb.Booster] = {}
-_meta_cache: dict[str, dict] = {}
+def _get_binance_price(symbol: str = "BTCUSDT") -> float:
+    """Fetch real-time price from Binance public API (no auth needed)."""
+    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+    resp = requests.get(url, timeout=5)
+    resp.raise_for_status()
+    return float(resp.json()["price"])
 
-
-def _model_path(symbol: str) -> Path:
-    return MODEL_DIR / f"{symbol}_xgb.json"
-
-
-def _meta_path(symbol: str) -> Path:
-    return MODEL_DIR / f"{symbol}_meta.json"
+MODEL_FILE = MODEL_DIR / "btc_model.json"
+META_FILE = MODEL_DIR / "btc_meta.json"
 
 
-def _load_model(symbol: str, force: bool = False) -> xgb.Booster:
-    if not force and symbol in _model_cache:
-        return _model_cache[symbol]
-
-    path = _model_path(symbol)
-    if not path.exists():
-        raise FileNotFoundError(f"No trained model for {symbol}. Run trainer.py first.")
-
-    booster = xgb.Booster()
-    booster.load_model(str(path))
-    _model_cache[symbol] = booster
-    logger.info("Loaded model for %s", symbol)
-
-    mp = _meta_path(symbol)
-    if mp.exists():
-        _meta_cache[symbol] = json.loads(mp.read_text())
-
-    return booster
-
-
-def reload_models():
-    """Force-reload all models from disk."""
-    _model_cache.clear()
-    _meta_cache.clear()
-    for symbol in TRADING_PAIRS:
-        if _model_path(symbol).exists():
-            _load_model(symbol, force=True)
-    logger.info("All models reloaded.")
-
-
-# ──────────────────────────────────────────────────────────
-#  STOP-LOSS / TAKE-PROFIT CALCULATOR
-# ──────────────────────────────────────────────────────────
-
-def _compute_sl_tp(
-    symbol: str,
-    direction: str,
-    current_price: float,
-    atr_value: float,
-    sr_levels: list[dict],
-) -> dict:
+class Predictor:
     """
-    Calculate SL and TP based on ATR + nearest S/R, with risk:reward check.
+    Load a trained XGBoost native Booster and produce enriched predictions.
+    Singleton usage: instantiate once, call predict_latest() per request.
     """
-    pair_cfg = TRADING_PAIRS[symbol]
-    sl_mult = pair_cfg.get("default_sl_atr_mult", SL_ATR_MULTIPLIER)
-    tp_mult = pair_cfg.get("default_tp_atr_mult", TP_ATR_MULTIPLIER)
-    decimals = pair_cfg["decimals"]
 
-    atr_sl = atr_value * sl_mult
-    atr_tp = atr_value * tp_mult
+    def __init__(self):
+        self._booster = None
+        self._meta = None
+        self._loaded = False
 
-    supports = sorted([l for l in sr_levels if l["type"] == "support"],
-                      key=lambda x: abs(x["price"] - current_price))
-    resistances = sorted([l for l in sr_levels if l["type"] == "resistance"],
-                         key=lambda x: abs(x["price"] - current_price))
+    # ── Load model ───────────────────────────────
 
-    if direction == "BUY":
-        # SL below recent support or ATR
-        sl_atr = current_price - atr_sl
-        sl_sr = supports[0]["price"] * 0.998 if supports else sl_atr  # tiny buffer
-        sl = max(sl_atr, sl_sr)  # tighter SL = higher of the two
+    def load(self):
+        if not MODEL_FILE.exists():
+            raise FileNotFoundError(f"No model at {MODEL_FILE}. Train first.")
+        self._booster = xgb.Booster()
+        self._booster.load_model(str(MODEL_FILE))
+        with open(META_FILE) as f:
+            self._meta = json.load(f)
+        self._loaded = True
+        n_feat = self._meta.get("n_features", "?")
+        logger.info("Model loaded: %s features, trained %s", n_feat, self._meta.get("trained_at", "?"))
 
-        # TP at resistance or ATR
-        tp_atr = current_price + atr_tp
-        tp_sr = resistances[0]["price"] * 0.998 if resistances else tp_atr
-        tp = min(tp_atr, tp_sr)  # take profit before resistance
+    # ── Raw predict ──────────────────────────────
 
-        risk = current_price - sl
-        reward = tp - current_price
+    def predict(self, X: np.ndarray, feature_names: list) -> np.ndarray:
+        """Return P(UP) for each row."""
+        dmat = xgb.DMatrix(X, feature_names=feature_names)
+        return self._booster.predict(dmat)
 
-    elif direction == "SELL":
-        sl_atr = current_price + atr_sl
-        sl_sr = resistances[0]["price"] * 1.002 if resistances else sl_atr
-        sl = min(sl_atr, sl_sr)
+    # ── Enriched latest prediction ───────────────
 
-        tp_atr = current_price - atr_tp
-        tp_sr = supports[0]["price"] * 1.002 if supports else tp_atr
-        tp = max(tp_atr, tp_sr)
+    def predict_latest(
+        self,
+        dataset: pd.DataFrame,
+        ohlcv_1h: pd.DataFrame,
+    ) -> dict:
+        """
+        Predict latest bar with ENRICHED context.
 
-        risk = sl - current_price
-        reward = current_price - tp
-    else:
-        # HOLD — no SL/TP
-        return {
-            "stop_loss": None,
-            "take_profit": None,
-            "risk_reward_ratio": None,
-            "risk_pct": None,
-            "reward_pct": None,
+        Args:
+            dataset: Feature matrix (no target col) from build_dataset
+            ohlcv_1h: Raw 1h OHLCV for market analysis
+
+        Returns:
+            dict with signal, confidence, market analysis, and conclusion
+        """
+        feature_cols = [c for c in dataset.columns if c != "target"]
+        trained_features = self._meta.get("feature_names", feature_cols)
+
+        # Align features: use only those the model was trained on
+        available = [f for f in trained_features if f in feature_cols]
+        missing = [f for f in trained_features if f not in feature_cols]
+        if missing:
+            logger.warning("Missing %d features: %s", len(missing), missing[:10])
+            # Fill missing with 0 so DMatrix shape matches
+            for m in missing:
+                dataset[m] = 0.0
+            available = trained_features
+
+        row = dataset[available].iloc[[-1]]
+        X = row.values
+
+        prob_up = float(self.predict(X, available)[0])
+        prob_down = 1 - prob_up
+
+        # Price & ATR
+        close = ohlcv_1h["Close"]
+        high = ohlcv_1h["High"]
+        low = ohlcv_1h["Low"]
+
+        # Use Binance real-time price instead of yfinance last candle close
+        try:
+            current_price = _get_binance_price()
+            logger.info("Binance live price: $%.2f (yfinance last close: $%.2f)",
+                        current_price, float(close.iloc[-1]))
+        except Exception as e:
+            logger.warning("Binance price fetch failed (%s), falling back to yfinance", e)
+            current_price = float(close.iloc[-1])
+
+        atr_val = float(get_atr(high, low, close).iloc[-1])
+        atr_pct = atr_val / current_price
+
+        # Signal determination
+        signal = "NO_TRADE"
+        reject_reason = None
+        sl_price = None
+        tp_price = None
+
+        if prob_up >= CONFIDENCE_LONG:
+            signal = "LONG"
+            sl_price = round(current_price - SL_ATR_MULT * atr_val, 2)
+            tp_price = round(current_price + TP_ATR_MULT * atr_val, 2)
+        elif prob_up <= CONFIDENCE_SHORT:
+            signal = "SHORT"
+            sl_price = round(current_price + SL_ATR_MULT * atr_val, 2)
+            tp_price = round(current_price - TP_ATR_MULT * atr_val, 2)
+        else:
+            reject_reason = f"Confidence {prob_up:.1%} in uncertain zone ({CONFIDENCE_SHORT:.0%}-{CONFIDENCE_LONG:.0%})"
+
+        # R:R check
+        if signal in ("LONG", "SHORT") and sl_price and tp_price:
+            risk = abs(current_price - sl_price)
+            reward = abs(tp_price - current_price)
+            rr = reward / risk if risk > 0 else 0
+            if rr < MIN_RR_RATIO:
+                reject_reason = f"R:R ratio {rr:.2f} below minimum {MIN_RR_RATIO}"
+                signal = "NO_TRADE"
+                sl_price = None
+                tp_price = None
+
+        # ── Market Analysis ──────────────────────
+        try:
+            market = get_market_analysis(ohlcv_1h)
+        except Exception as e:
+            logger.warning("Market analysis error: %s", e)
+            market = {"error": str(e)}
+
+        # ── Multi-TF Alignment ───────────────────
+        # Check HTF features that were used in prediction
+        htf_alignment = _assess_htf_alignment(dataset.iloc[-1], feature_cols)
+
+        # ── Conclusion Message ───────────────────
+        conclusion = _build_conclusion(
+            signal=signal,
+            prob_up=prob_up,
+            current_price=current_price,
+            market=market,
+            htf_alignment=htf_alignment,
+            atr_val=atr_val,
+            sl_price=sl_price,
+            tp_price=tp_price,
+            reject_reason=reject_reason,
+        )
+
+        # ── Build Response ───────────────────────
+        result = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "symbol": "BTC/USD",
+            "signal": signal,
+            "probability_up": round(prob_up, 4),
+            "probability_down": round(prob_down, 4),
+            "confidence_pct": round(max(prob_up, prob_down) * 100, 1),
+            "current_price": current_price,
+            "atr": round(atr_val, 2),
+            "atr_pct": round(atr_pct * 100, 3),
         }
 
-    rr = round(reward / risk, 2) if risk > 0 else 0.0
+        if signal in ("LONG", "SHORT"):
+            result["sl_price"] = sl_price
+            result["tp_price"] = tp_price
+            risk = abs(current_price - sl_price)
+            reward = abs(tp_price - current_price)
+            result["risk_reward"] = round(reward / risk, 2) if risk > 0 else 0
+            result["risk_usd"] = round(risk, 2)
+            result["reward_usd"] = round(reward, 2)
 
-    return {
-        "stop_loss": round(sl, decimals),
-        "take_profit": round(tp, decimals),
-        "risk_reward_ratio": rr,
-        "risk_pct": round((risk / current_price) * 100, 2),
-        "reward_pct": round((reward / current_price) * 100, 2),
-    }
+        if reject_reason:
+            result["reject_reason"] = reject_reason
 
+        result["market_analysis"] = market
+        result["htf_alignment"] = htf_alignment
+        result["conclusion"] = conclusion
 
-# ──────────────────────────────────────────────────────────
-#  MULTI-TIMEFRAME CONFLUENCE SCORER
-# ──────────────────────────────────────────────────────────
+        return result
 
-def _tf_trend(df: pd.DataFrame) -> dict:
-    """Quick trend assessment for a single timeframe."""
-    close = df["Close"]
-    high = df["High"]
-    low = df["Low"]
+    # ── Model info ───────────────────────────────
 
-    rsi = _rsi(close).iloc[-1]
-    _, _, macd_h = _macd(close)
-    macd_hist = macd_h.iloc[-1]
-    k, d = _stochastic(high, low, close)
-    stoch_k = k.iloc[-1]
-
-    ema9 = close.ewm(span=9, adjust=False).mean().iloc[-1]
-    ema21 = close.ewm(span=21, adjust=False).mean().iloc[-1]
-    ema_cross = "bullish" if ema9 > ema21 else "bearish"
-
-    # Simple score: -3 to +3
-    score = 0
-    if rsi > 55: score += 1
-    elif rsi < 45: score -= 1
-    if macd_hist > 0: score += 1
-    else: score -= 1
-    if ema_cross == "bullish": score += 1
-    else: score -= 1
-
-    trend = "bullish" if score > 0 else ("bearish" if score < 0 else "neutral")
-
-    return {
-        "trend": trend,
-        "score": score,
-        "rsi": round(float(rsi), 2),
-        "macd_hist": round(float(macd_hist), 6),
-        "stoch_k": round(float(stoch_k), 2),
-        "ema_cross": ema_cross,
-    }
+    def get_model_info(self) -> dict:
+        if not self._meta:
+            return {}
+        return {
+            "trained_at": self._meta.get("trained_at"),
+            "n_samples": self._meta.get("n_samples"),
+            "n_features": self._meta.get("n_features"),
+            "cv_metrics": self._meta.get("cv_metrics"),
+            "final_metrics": self._meta.get("final_metrics"),
+            "best_iteration": self._meta.get("best_iteration"),
+            "top_features": self._meta.get("top_features", [])[:15],
+        }
 
 
-def _confluence_analysis(mtf_data: dict[str, pd.DataFrame]) -> dict:
+# ──────────────────────────────────────────────
+#  HTF ALIGNMENT ANALYSIS
+# ──────────────────────────────────────────────
+
+def _assess_htf_alignment(features_row: pd.Series, feature_cols: list) -> dict:
     """
-    Analyse multiple timeframes and compute a confluence score.
-    Score range: -N*3 to +N*3 where N = number of timeframes.
+    Assess multi-timeframe alignment from HTF features embedded in the dataset.
+    Returns bullish/bearish/neutral alignment per timeframe.
     """
-    tf_details = {}
-    total_score = 0
-    total_possible = 0
+    alignment = {}
 
-    for tf, df in mtf_data.items():
-        if df is None or len(df) < 30:
+    for tf in ["4h", "1d"]:
+        prefix = f"htf_{tf}_"
+        relevant = {k: v for k, v in features_row.items() if k.startswith(prefix)}
+        if not relevant:
             continue
-        info = _tf_trend(df)
-        tf_details[tf] = info
-        total_score += info["score"]
-        total_possible += 3
 
-    if total_possible == 0:
-        confluence_pct = 0
+        bullish = 0
+        bearish = 0
+
+        # RSI
+        rsi = relevant.get(f"{prefix}rsi")
+        if rsi is not None:
+            if rsi > 0.55:
+                bullish += 1
+            elif rsi < 0.45:
+                bearish += 1
+
+        # EMA cross
+        ema_x = relevant.get(f"{prefix}ema_cross")
+        if ema_x is not None:
+            if ema_x > 0:
+                bullish += 1
+            else:
+                bearish += 1
+
+        # MACD histogram
+        macd_h = relevant.get(f"{prefix}macd_hist")
+        if macd_h is not None:
+            if macd_h > 0:
+                bullish += 1
+            else:
+                bearish += 1
+
+        # Trend (above EMA50)
+        trend = relevant.get(f"{prefix}trend")
+        if trend is not None:
+            if trend > 0.5:
+                bullish += 1
+            else:
+                bearish += 1
+
+        # ADX (trend strength)
+        adx = relevant.get(f"{prefix}adx")
+        adx_str = "WEAK"
+        if adx is not None:
+            if adx > 0.25:
+                adx_str = "STRONG"
+            elif adx > 0.20:
+                adx_str = "MODERATE"
+
+        # BB position
+        bb = relevant.get(f"{prefix}bb_pctb")
+
+        total = bullish + bearish
+        if total == 0:
+            tf_bias = "NEUTRAL"
+        elif bullish > bearish:
+            tf_bias = "BULLISH"
+        elif bearish > bullish:
+            tf_bias = "BEARISH"
+        else:
+            tf_bias = "NEUTRAL"
+
+        alignment[tf] = {
+            "bias": tf_bias,
+            "bullish_signals": bullish,
+            "bearish_signals": bearish,
+            "trend_strength": adx_str,
+            "rsi": round(float(rsi * 100), 1) if rsi is not None else None,
+        }
+
+    # Overall alignment
+    biases = [v["bias"] for v in alignment.values()]
+    if all(b == "BULLISH" for b in biases):
+        alignment["overall"] = "ALL_BULLISH"
+    elif all(b == "BEARISH" for b in biases):
+        alignment["overall"] = "ALL_BEARISH"
+    elif "BULLISH" in biases and "BEARISH" in biases:
+        alignment["overall"] = "MIXED"
     else:
-        confluence_pct = round((total_score / total_possible) * 100, 1)
+        alignment["overall"] = "NEUTRAL"
 
-    if confluence_pct > 30:
-        overall = "bullish"
-    elif confluence_pct < -30:
-        overall = "bearish"
-    else:
-        overall = "mixed"
-
-    return {
-        "overall_trend": overall,
-        "confluence_score": total_score,
-        "confluence_pct": confluence_pct,
-        "timeframes": tf_details,
-    }
+    return alignment
 
 
-# ──────────────────────────────────────────────────────────
-#  BEST TIMING / ENTRY QUALITY
-# ──────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────
+#  CONCLUSION MESSAGE BUILDER
+# ──────────────────────────────────────────────
 
-def _entry_timing(df_entry: pd.DataFrame, direction: str) -> dict:
+def _build_conclusion(
+    signal: str,
+    prob_up: float,
+    current_price: float,
+    market: dict,
+    htf_alignment: dict,
+    atr_val: float,
+    sl_price: float = None,
+    tp_price: float = None,
+    reject_reason: str = None,
+) -> str:
     """
-    Assess entry timing quality on the entry timeframe (e.g. 1h).
-    Returns timing score and recommendation.
+    Build a human-readable conclusion paragraph summarizing the prediction.
     """
-    if df_entry is None or len(df_entry) < 20:
-        return {"timing": "unknown", "score": 0, "note": "Insufficient entry-TF data"}
+    lines = []
 
-    close = df_entry["Close"]
-    high = df_entry["High"]
-    low = df_entry["Low"]
+    # Header
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    lines.append(f"=== SORBOT BTC/USD ANALYSIS — {ts} ===")
+    lines.append("")
 
-    rsi = _rsi(close).iloc[-1]
-    k, _ = _stochastic(high, low, close)
-    stoch = k.iloc[-1]
-    _, _, macd_h = _macd(close)
-    macd_hist = macd_h.iloc[-1]
+    # Price & confidence
+    conf_pct = max(prob_up, 1 - prob_up) * 100
+    lines.append(f"BTC is currently trading at ${current_price:,.2f}.")
+    lines.append(f"Model confidence: {conf_pct:.1f}% (P(UP)={prob_up:.1%}, P(DOWN)={1-prob_up:.1%}).")
+    lines.append("")
 
-    score = 0
-    notes = []
+    # Market state
+    if isinstance(market, dict) and "error" not in market:
+        regime = market.get("market_regime", "UNKNOWN")
+        trend = market.get("trend_direction", "UNKNOWN")
+        indicators = market.get("indicators", {})
+        rsi = indicators.get("rsi", 0)
+        rsi_zone = indicators.get("rsi_zone", "")
+        adx = indicators.get("adx", 0)
+        adx_interp = indicators.get("adx_interpretation", "")
+        squeeze = indicators.get("is_squeeze", False)
+        vol_ratio = indicators.get("volume_ratio", 1.0)
+        macd_sig = indicators.get("macd_signal", "")
+        stoch_zone = indicators.get("stoch_zone", "")
+        mfi = indicators.get("mfi", 50)
+        cci = indicators.get("cci", 0)
+        williams = indicators.get("williams_r", -50)
 
-    if direction == "BUY":
-        if rsi < 35:
-            score += 2; notes.append("RSI oversold — ideal buy zone")
-        elif rsi < 45:
-            score += 1; notes.append("RSI approaching oversold")
-        elif rsi > 70:
-            score -= 1; notes.append("RSI overbought — risky to buy")
+        lines.append(f"MARKET STATE: {regime} | TREND: {trend}")
+        lines.append(f"  RSI: {rsi:.1f} ({rsi_zone}) | ADX: {adx:.1f} ({adx_interp})")
+        lines.append(f"  MACD: {macd_sig} | Stochastic: {stoch_zone} | MFI: {mfi:.1f}")
+        lines.append(f"  CCI: {cci:.1f} | Williams %R: {williams:.1f}")
+        lines.append(f"  Volume: {vol_ratio:.1f}x average | Squeeze: {'YES' if squeeze else 'NO'}")
 
-        if stoch < 20:
-            score += 1; notes.append("Stochastic oversold")
-        if macd_hist > 0 and macd_h.iloc[-2] < 0:
-            score += 2; notes.append("MACD just crossed bullish")
-        elif macd_hist > 0:
-            score += 1
+        # Divergences
+        divs = market.get("divergences", {})
+        rsi_div = divs.get("rsi_divergence", "NONE")
+        macd_div = divs.get("macd_divergence", "NONE")
+        if rsi_div != "NONE" or macd_div != "NONE":
+            lines.append(f"  DIVERGENCES: RSI={rsi_div}, MACD={macd_div}")
 
-    elif direction == "SELL":
-        if rsi > 65:
-            score += 2; notes.append("RSI overbought — ideal sell zone")
-        elif rsi > 55:
-            score += 1; notes.append("RSI approaching overbought")
-        elif rsi < 30:
-            score -= 1; notes.append("RSI oversold — risky to sell")
+        # Support/Resistance
+        structure = market.get("structure", {})
+        if structure:
+            lines.append(f"  S/R LEVELS: R2=${structure.get('resistance_2', 0):,.2f} | R1=${structure.get('resistance_1', 0):,.2f} | "
+                         f"Pivot=${structure.get('pivot', 0):,.2f} | S1=${structure.get('support_1', 0):,.2f} | S2=${structure.get('support_2', 0):,.2f}")
 
-        if stoch > 80:
-            score += 1; notes.append("Stochastic overbought")
-        if macd_hist < 0 and macd_h.iloc[-2] > 0:
-            score += 2; notes.append("MACD just crossed bearish")
-        elif macd_hist < 0:
-            score += 1
+        # Signal score
+        score = market.get("signal_score", {})
+        bull_s = score.get("bullish_signals", 0)
+        bear_s = score.get("bearish_signals", 0)
+        bull_pct = score.get("bullish_pct", 50)
+        bear_pct = score.get("bearish_pct", 50)
+        lines.append(f"  SIGNAL SCORE: {bull_s} bullish ({bull_pct}%) vs {bear_s} bearish ({bear_pct}%)")
+        lines.append("")
 
-    # Map score to timing label
-    if score >= 3:
-        timing = "excellent"
-    elif score >= 1:
-        timing = "good"
-    elif score == 0:
-        timing = "neutral"
-    else:
-        timing = "poor"
+    # HTF alignment
+    if htf_alignment:
+        overall = htf_alignment.get("overall", "UNKNOWN")
+        lines.append(f"MULTI-TIMEFRAME ALIGNMENT: {overall}")
+        for tf in ["4h", "1d"]:
+            tf_info = htf_alignment.get(tf, {})
+            if tf_info:
+                lines.append(
+                    f"  {tf.upper()}: {tf_info.get('bias', '?')} "
+                    f"(Bull:{tf_info.get('bullish_signals', 0)} Bear:{tf_info.get('bearish_signals', 0)} "
+                    f"TrendStr:{tf_info.get('trend_strength', '?')})"
+                )
+        lines.append("")
 
-    return {
-        "timing": timing,
-        "score": score,
-        "note": "; ".join(notes) if notes else "No strong signals on entry TF",
-    }
+    # Decision
+    if signal == "NO_TRADE":
+        lines.append(f"DECISION: NO TRADE")
+        if reject_reason:
+            lines.append(f"  Reason: {reject_reason}")
+        lines.append("")
+        lines.append("The AI model does not detect a high-conviction setup at this time. "
+                      "The probability is too close to 50/50 or the risk/reward profile is unfavorable. "
+                      "Patience is key — waiting for clearer signals preserves capital.")
+    elif signal == "LONG":
+        risk = abs(current_price - sl_price)
+        reward = abs(tp_price - current_price)
+        rr = reward / risk if risk > 0 else 0
+        lines.append(f"DECISION: LONG (BUY)")
+        lines.append(f"  Entry: ${current_price:,.2f}")
+        lines.append(f"  Stop Loss: ${sl_price:,.2f} ({SL_ATR_MULT}x ATR = -${risk:,.2f})")
+        lines.append(f"  Take Profit: ${tp_price:,.2f} ({TP_ATR_MULT}x ATR = +${reward:,.2f})")
+        lines.append(f"  Risk:Reward = 1:{rr:.1f}")
+        lines.append("")
+        lines.append(f"The AI model sees a BULLISH opportunity with {prob_up:.1%} probability of upward movement. "
+                      f"Price is expected to rise from ${current_price:,.2f} toward ${tp_price:,.2f} within "
+                      f"the next few hours. ATR volatility is ${atr_val:.2f} ({atr_val/current_price*100:.2f}%). "
+                      f"Trade with proper risk management - risk only what you can afford to lose.")
+    elif signal == "SHORT":
+        # In spot mode, SHORT means "sell existing BTC" or "stay out"
+        lines.append(f"DECISION: SELL / STAY OUT (Bearish)")
+        lines.append(f"  Current Price: ${current_price:,.2f}")
+        lines.append("")
+        lines.append(f"The AI model sees a BEARISH outlook with {1-prob_up:.1%} probability of downward movement. "
+                      f"Spot trading is BUY-only, so no short position will be opened. "
+                      f"If you hold BTC, consider selling. Otherwise, wait for a bullish setup. "
+                      f"ATR volatility is ${atr_val:.2f} ({atr_val/current_price*100:.2f}%). "
+                      f"Patience preserves capital.")
 
+    lines.append("")
+    lines.append("--- This is an AI-generated analysis. Not financial advice. Trade at your own risk. ---")
 
-# ──────────────────────────────────────────────────────────
-#  MAIN PREDICT
-# ──────────────────────────────────────────────────────────
-
-def predict(symbol: str) -> dict:
-    """
-    Generate a live prediction with full trade plan.
-    """
-    if symbol not in TRADING_PAIRS:
-        raise ValueError(f"Unknown symbol '{symbol}'")
-
-    booster = _load_model(symbol)
-    pair_cfg = TRADING_PAIRS[symbol]
-
-    # 1. Fetch primary + HTF data
-    primary_df = fetch_ohlcv(symbol, PRIMARY_TIMEFRAME)
-    htf_data = {}
-    for tf in CONFLUENCE_TIMEFRAMES:
-        if tf == PRIMARY_TIMEFRAME:
-            htf_data[tf] = primary_df
-            continue
-        try:
-            htf_data[tf] = fetch_ohlcv(symbol, tf)
-        except Exception:
-            pass
-
-    # Entry timeframe
-    entry_df = None
-    try:
-        entry_df = fetch_ohlcv(symbol, ENTRY_TIMEFRAME)
-    except Exception:
-        pass
-
-    # 2. Build features (match training)
-    htf_for_features = {k: v for k, v in htf_data.items() if k != PRIMARY_TIMEFRAME}
-    features = build_features(primary_df, include_target=False,
-                              htf_dataframes=htf_for_features or None)
-    if features.empty:
-        raise RuntimeError("Feature matrix empty after NaN cleanup")
-
-    X_live = features.iloc[[-1]]
-
-    meta = _meta_cache.get(symbol, {})
-    if "feature_names" in meta:
-        # Ensure column order matches training; fill missing with 0
-        for col in meta["feature_names"]:
-            if col not in X_live.columns:
-                X_live[col] = 0.0
-        X_live = X_live[meta["feature_names"]]
-
-    # 3. Predict
-    dmat = xgb.DMatrix(X_live)
-    proba = booster.predict(dmat)[0]
-    class_idx = int(np.argmax(proba))
-    confidence = float(proba[class_idx])
-
-    if confidence < CONFIDENCE_THRESHOLD:
-        direction = "HOLD"
-    else:
-        direction = LABEL_MAP[class_idx]
-
-    current_price = round(float(primary_df["Close"].iloc[-1]), pair_cfg["decimals"])
-
-    # 4. ATR (absolute) for SL/TP
-    atr_abs = _atr_raw(primary_df["High"], primary_df["Low"], primary_df["Close"]).iloc[-1]
-
-    # 5. Support / Resistance levels
-    sr_levels = detect_sr_levels(primary_df["High"], primary_df["Low"], primary_df["Close"])
-
-    # 6. SL / TP
-    sl_tp = _compute_sl_tp(symbol, direction, current_price, float(atr_abs), sr_levels)
-
-    # 7. Multi-timeframe confluence
-    confluence = _confluence_analysis(htf_data)
-
-    # 8. Entry timing
-    timing = _entry_timing(entry_df, direction)
-
-    # 9. Risk:reward gate
-    trade_viable = True
-    trade_note = ""
-    if direction in ("BUY", "SELL"):
-        rr = sl_tp.get("risk_reward_ratio") or 0
-        if rr < MIN_RISK_REWARD:
-            trade_viable = False
-            trade_note = f"R:R {rr} < minimum {MIN_RISK_REWARD} — consider waiting"
-
-    # 10. Indicators snapshot
-    last_feat = features.iloc[-1]
-    rsi_val = round(float(last_feat.get("rsi", 0)), 2)
-    macd_val = float(last_feat.get("macd_hist", 0))
-    adx_val = round(float(last_feat.get("adx", 0)), 2)
-
-    result = {
-        "symbol": symbol,
-        "direction": direction,
-        "confidence": round(confidence, 4),
-        "current_price": current_price,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-
-        "trade_plan": {
-            **sl_tp,
-            "viable": trade_viable,
-            "note": trade_note,
-        },
-
-        "confluence": confluence,
-
-        "entry_timing": timing,
-
-        "support_resistance": sr_levels[:6],
-
-        "indicators": {
-            "rsi": rsi_val,
-            "macd": "bullish" if macd_val > 0 else "bearish",
-            "macd_histogram": round(macd_val, 6),
-            "adx": adx_val,
-            "adx_trend": "strong" if adx_val > 25 else "weak",
-            "atr_abs": round(float(atr_abs), pair_cfg["decimals"]),
-            "bb_pctb": round(float(last_feat.get("bb_pctb", 0)), 4),
-            "ema200_dist": round(float(last_feat.get("ema200_dist", 0)), 4),
-            "stoch_k": round(float(last_feat.get("stoch_k", 0)), 2),
-            "stoch_d": round(float(last_feat.get("stoch_d", 0)), 2),
-        },
-
-        "probabilities": {
-            "SELL": round(float(proba[0]), 4),
-            "HOLD": round(float(proba[1]), 4),
-            "BUY":  round(float(proba[2]), 4),
-        },
-
-        "model_info": {
-            "version": meta.get("version", "1.0"),
-            "trained_at": meta.get("trained_at", "unknown"),
-            "accuracy": meta.get("accuracy", 0),
-            "n_features": meta.get("n_features", len(features.columns)),
-        },
-    }
-
-    logger.info(
-        "%s → %s (%.1f%%)  price=%s  SL=%s  TP=%s  R:R=%s  confluence=%s  timing=%s",
-        symbol, direction, confidence * 100, current_price,
-        sl_tp.get("stop_loss"), sl_tp.get("take_profit"),
-        sl_tp.get("risk_reward_ratio"), confluence["overall_trend"], timing["timing"],
-    )
-    return result
-
-
-def predict_all() -> list[dict]:
-    """Run full predictions for every active pair."""
-    results = []
-    for symbol in TRADING_PAIRS:
-        try:
-            results.append(predict(symbol))
-        except Exception as exc:
-            logger.error("Prediction failed for %s: %s", symbol, exc)
-            results.append({"symbol": symbol, "error": str(exc)})
-    return results
-
-
-def get_model_info(symbol: str) -> Optional[dict]:
-    """Return training metadata for a symbol, or None."""
-    mp = _meta_path(symbol)
-    if mp.exists():
-        return json.loads(mp.read_text())
-    return None
-
-
-# ── CLI test ──────────────────────────────────────────────
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
-    for p in predict_all():
-        print(json.dumps(p, indent=2))
+    return "\n".join(lines)
