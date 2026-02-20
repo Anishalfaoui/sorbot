@@ -53,12 +53,12 @@ services:
       retries: 3
       start_period: 60s
 
-  # ── React Frontend (port 80) ──
+  # ── React Frontend (port 3000) ──
   frontend:
     build: ./frontend
     container_name: sorbot-frontend
     ports:
-      - "80:80"
+      - "3000:80"
     depends_on:
       backend:
         condition: service_healthy

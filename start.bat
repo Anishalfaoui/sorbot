@@ -15,13 +15,13 @@ echo.
 REM ── Kill processes on required ports ──
 echo [1/3] Freeing ports...
 
-for %%P in (80 8000 8081) do (
+for %%P in (3000 8000 8081) do (
     for /f "tokens=5" %%A in ('netstat -ano ^| findstr :%%P ^| findstr LISTENING 2^>nul') do (
         echo   Killing process on port %%P (PID: %%A)
         taskkill /F /PID %%A >nul 2>&1
     )
 )
-echo   Ports 80, 8000, 8081 are free.
+echo   Ports 3000, 8000, 8081 are free.
 echo.
 
 REM ── Build and start Docker containers ──
@@ -37,7 +37,7 @@ echo ========================================
 echo   SORBOT IS RUNNING!
 echo ========================================
 echo.
-echo   Frontend:   http://localhost
+echo   Frontend:   http://localhost:3000
 echo   Backend:    http://localhost:8081
 echo   AI Engine:  http://localhost:8000
 echo.

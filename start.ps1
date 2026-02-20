@@ -14,7 +14,7 @@ Write-Host ""
 # ── Kill processes on required ports ──
 Write-Host "[1/3] Freeing ports..." -ForegroundColor Yellow
 
-$ports = @(80, 8000, 8081)
+$ports = @(3000, 8000, 8081)
 foreach ($port in $ports) {
     $connections = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     foreach ($conn in $connections) {
@@ -26,7 +26,7 @@ foreach ($port in $ports) {
         }
     }
 }
-Write-Host "  Ports 80, 8000, 8081 are free." -ForegroundColor Green
+Write-Host "  Ports 3000, 8000, 8081 are free." -ForegroundColor Green
 Write-Host ""
 
 # ── Build and start Docker containers ──
@@ -42,7 +42,7 @@ Write-Host "========================================" -ForegroundColor Green
 Write-Host "  SORBOT IS RUNNING!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Frontend:   http://localhost" -ForegroundColor White
+Write-Host "  Frontend:   http://localhost:3000" -ForegroundColor White
 Write-Host "  Backend:    http://localhost:8081" -ForegroundColor White
 Write-Host "  AI Engine:  http://localhost:8000" -ForegroundColor White
 Write-Host ""
