@@ -1,0 +1,37 @@
+sorbot/
+│
+├── ai_engine/              # MICROSERVICE 1: The Brain (Python + XGBoost)
+│   ├── data/               # Store historical CSVs here
+│   ├── models/             # Store your trained .json models here
+│   ├── requirements.txt    # Python dependencies (xgboost, fastapi, yfinance)
+│   ├── main.py             # FastAPI entry point (Returns predictions to Java)
+│   └── ml_core/            # Machine Learning Logic
+│       ├── data_loader.py  # Fetches from yfinance
+│       ├── feature_eng.py  # Calculates RSI, MACD
+│       ├── trainer.py      # Trains XGBoost and saves model
+│       └── predictor.py    # Loads model and predicts live
+│
+├── backend/                # MICROSERVICE 2: The Core (Java Spring Boot)
+│   ├── pom.xml             # Maven dependencies
+│   └── src/
+│       ├── main/resources/
+│       │   └── application.yml # Database config
+│       └── main/java/com/sorbot/
+│           ├── SorbotApp.java
+│           ├── controller/ # REST APIs for React
+│           ├── service/    # Logic: Calls AI, executes trades
+│           ├── entity/     # Database tables
+│           └── repository/ # PostgreSQL database interactions
+│
+├── frontend/               # MICROSERVICE 3: The Face (React)
+│   ├── package.json        # Node dependencies
+│   ├── vite.config.ts      # Build configuration
+│   └── src/
+│       ├── App.tsx         # Main React application
+│       ├── components/     # UI parts: Charts, Stat Cards
+│       ├── pages/          # Views: Dashboard, Settings, History
+│       └── api/            # Axios calls to Spring Boot
+│
+├── docker-compose.yml      # Launches DB, Spring, Python, and React
+├── .gitignore              # Ignores target/, node_modules/, venv/
+└── README.md               # Main documentation

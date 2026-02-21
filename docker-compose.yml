@@ -1,0 +1,70 @@
+# ── Sorbot AI Trading System ──────────────────
+# Docker Compose: AI Engine + Spring Boot + React
+#
+# Usage:
+#   docker compose up --build        (first time / after changes)
+#   docker compose up -d             (background)
+#   docker compose down              (stop all)
+#   docker compose logs -f           (follow logs)
+
+services:
+  # ── Python AI Engine (port 8000) ──
+  ai-engine:
+    build: ./ai_engine
+    container_name: sorbot-ai-engine
+    ports:
+      - "8000:8000"
+    environment:
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_API_SECRET=${BINANCE_API_SECRET}
+      - BINANCE_TESTNET=false
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    volumes:
+      - ai-data:/app/data
+      - ai-models:/app/models
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ── Spring Boot Backend (port 8081) ──
+  backend:
+    build: ./backend
+    container_name: sorbot-backend
+    ports:
+      - "8081:8081"
+    environment:
+      - AI_ENGINE_URL=http://ai-engine:8000
+      - SPRING_DATASOURCE_URL=jdbc:h2:file:/app/data/sorbot_db;DB_CLOSE_DELAY=-1
+    volumes:
+      - backend-data:/app/data
+    depends_on:
+      ai-engine:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ── React Frontend (port 3000) ──
+  frontend:
+    build: ./frontend
+    container_name: sorbot-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  ai-data:
+  ai-models:
+  backend-data:

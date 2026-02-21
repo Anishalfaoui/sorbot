@@ -1,0 +1,77 @@
+# ========================
+# Sorbot Root .gitignore
+# ========================
+
+# --- Environment & Secrets ---
+.env
+.env.*
+!.env.example
+
+# --- OS files ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+*.swp
+*.swo
+*~
+
+# --- IDE / Editor ---
+.idea/
+*.iml
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.project
+.classpath
+.settings/
+
+# --- Docker ---
+docker-compose.override.yml
+
+# --- Data / Database ---
+data/
+*.mv.db
+*.trace.db
+
+# --- Python (ai_engine) ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+.tox/
+.coverage
+htmlcov/
+
+# --- Java / Maven (backend) ---
+backend/target/
+*.class
+*.jar
+*.war
+*.ear
+*.log
+hs_err_pid*
+
+# --- Node / Frontend ---
+node_modules/
+frontend/dist/
+frontend/node_modules/
+.cache/
+*.tsbuildinfo
+
+# --- Logs ---
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
