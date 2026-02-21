@@ -1,0 +1,29 @@
+# Maven build output
+target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.project
+.classpath
+.settings/
+
+# Compiled files
+*.class
+*.jar
+!*.jar.original
+*.war
+*.ear
+
+# Logs
+*.log
+hs_err_pid*
+
+# H2 Database
+*.mv.db
+*.trace.db
+
+# OS
+.DS_Store
+Thumbs.db
