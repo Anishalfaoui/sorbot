@@ -48,18 +48,34 @@ public class PredictionController {
      */
     @PostMapping("/{id}/accept")
     public ResponseEntity<Map<String, Object>> acceptPrediction(@PathVariable Long id) {
-        Map<String, Object> result = tradingService.acceptPrediction(id);
-        if (result.containsKey("error")) {
-            return ResponseEntity.badRequest().body(result);
+        try {
+            Map<String, Object> result = tradingService.acceptPrediction(id);
+            if (result.containsKey("error")) {
+                return ResponseEntity.badRequest().body(result);
+            }
+            return ResponseEntity.ok(result);
+        } catch (RuntimeException e) {
+            String message = e.getMessage();
+            if (message != null && message.contains("not found")) {
+                return ResponseEntity.status(404).body(Map.of("error", message));
+            }
+            return ResponseEntity.internalServerError().body(Map.of("error", message != null ? message : "Trade execution failed"));
         }
-        return ResponseEntity.ok(result);
     }
 
     /**
      * POST /api/predictions/{id}/reject — Reject a prediction (manual mode).
      */
     @PostMapping("/{id}/reject")
-    public Prediction rejectPrediction(@PathVariable Long id) {
-        return tradingService.rejectPrediction(id);
+    public ResponseEntity<?> rejectPrediction(@PathVariable Long id) {
+        try {
+            return ResponseEntity.ok(tradingService.rejectPrediction(id));
+        } catch (RuntimeException e) {
+            String message = e.getMessage();
+            if (message != null && message.contains("not found")) {
+                return ResponseEntity.status(404).body(Map.of("error", message));
+            }
+            return ResponseEntity.internalServerError().body(Map.of("error", message != null ? message : "Rejection failed"));
+        }
     }
 }

@@ -99,6 +99,40 @@ export default function PredictionCard({ prediction, mode, onAccept, onReject, a
           </>
         )}
 
+        {/* Position sizing estimates */}
+        {p.signal !== 'NO_TRADE' && p.estNotionalUsd != null && (
+          <>
+            <div className="pred-item" style={{ borderTop: '1px solid var(--border)', paddingTop: 8, gridColumn: '1 / -1' }}>
+              <span className="pred-item-label" style={{ fontSize: 11, fontWeight: 600, color: 'var(--yellow)', letterSpacing: 1 }}>
+                💰 POSITION SIZING
+              </span>
+            </div>
+            <div className="pred-item">
+              <span className="pred-item-label">Capital Used</span>
+              <span className="pred-item-value" style={{
+                color: (p.estCapitalUsedPct || 0) > 50 ? 'var(--red)' :
+                       (p.estCapitalUsedPct || 0) > 25 ? 'var(--yellow)' : 'var(--green)'
+              }}>
+                ${formatPrice(p.estNotionalUsd)} ({p.estCapitalUsedPct?.toFixed(1)}%)
+              </span>
+            </div>
+            <div className="pred-item">
+              <span className="pred-item-label">Quantity</span>
+              <span className="pred-item-value">{p.estQtyBtc?.toFixed(5)} BTC</span>
+            </div>
+            <div className="pred-item">
+              <span className="pred-item-label">Risk if SL Hit</span>
+              <span className="pred-item-value" style={{ color: 'var(--red)' }}>
+                ${p.estRiskUsd?.toFixed(2)}
+              </span>
+            </div>
+            <div className="pred-item">
+              <span className="pred-item-label">Available Balance</span>
+              <span className="pred-item-value">${formatPrice(p.estBalance)}</span>
+            </div>
+          </>
+        )}
+
         <div className="pred-item">
           <span className="pred-item-label">ATR</span>
           <span className="pred-item-value">

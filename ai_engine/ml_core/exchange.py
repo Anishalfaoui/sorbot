@@ -143,6 +143,9 @@ class BinanceExchange:
         Spot trading is BUY-only (no short selling).
         If signal is SHORT, we skip (handled in main.py).
 
+        The OCO order combines TP (LIMIT_MAKER above) and SL (STOP_LOSS below)
+        into a single order list. If one fills, Binance cancels the other.
+
         Args:
             side: "LONG" only (SHORT is blocked upstream)
             qty: BTC amount to buy
@@ -161,20 +164,21 @@ class BinanceExchange:
         sl_str = f"{sl_price:.{DECIMALS}f}"
         tp_str = f"{tp_price:.{DECIMALS}f}"
 
-        # Stop limit price slightly below stop price (for OCO)
+        # Stop limit price slightly below stop trigger (for SL execution)
         sl_limit = round(sl_price * 0.999, DECIMALS)
         sl_limit_str = f"{sl_limit:.{DECIMALS}f}"
 
         results = {}
 
         try:
-            # 1) Market BUY
+            # ─── Step 1: Market BUY ───────────────────
             entry_order = self.client.create_order(
                 symbol=SYMBOL,
                 side="BUY",
                 type="MARKET",
                 quantity=qty_str,
             )
+
             # Extract fill price
             fills = entry_order.get("fills", [])
             if fills:
@@ -187,58 +191,138 @@ class BinanceExchange:
             results["entry"] = {
                 "orderId": entry_order["orderId"],
                 "status": entry_order["status"],
-                "side": "LONG",
+                "side": "BUY",
                 "qty": qty,
                 "entry_price": self._entry_price,
             }
-            logger.info("Spot BUY filled: %.5f BTC @ $%.2f", qty, self._entry_price)
+            logger.info("✅ Spot BUY filled: %.5f BTC @ $%.2f", qty, self._entry_price)
 
-            # 2) OCO sell order (TP + SL combined)
-            # Binance OCO: price = TP limit, stopPrice = SL trigger, stopLimitPrice = SL limit
-            try:
-                oco = self.client.create_oco_order(
-                    symbol=SYMBOL,
-                    side="SELL",
-                    quantity=qty_str,
-                    price=tp_str,                     # Take profit limit price
-                    stopPrice=sl_str,                 # Stop loss trigger price
-                    stopLimitPrice=sl_limit_str,      # Stop loss limit price
-                    stopLimitTimeInForce="GTC",
-                )
-                results["oco"] = {
-                    "orderListId": oco["orderListId"],
-                    "tp_price": tp_price,
-                    "sl_price": sl_price,
-                    "status": oco["listOrderStatus"],
-                }
-                logger.info("OCO sell placed: TP=$%s, SL=$%s", tp_str, sl_str)
-            except Exception as e:
-                logger.error("OCO order failed: %s — placing separate limit orders", e)
-                # Fallback: place just a stop-loss limit sell
-                try:
-                    sl_order = self.client.create_order(
-                        symbol=SYMBOL,
-                        side="SELL",
-                        type="STOP_LOSS_LIMIT",
-                        quantity=qty_str,
-                        price=sl_limit_str,
-                        stopPrice=sl_str,
-                        timeInForce="GTC",
-                    )
-                    results["stop_loss"] = {
-                        "orderId": sl_order["orderId"],
-                        "stopPrice": sl_price,
-                    }
-                    logger.info("Fallback SL order placed at $%s", sl_str)
-                except Exception as e2:
-                    results["sl_error"] = str(e2)
-                    logger.error("SL fallback also failed: %s", e2)
+            # ─── Step 2: OCO Sell (TP + SL combined) ──
+            # Binance OCO = one order list with two legs:
+            #   Above leg = LIMIT_MAKER at TP price (sells when price goes UP to TP)
+            #   Below leg = STOP_LOSS_LIMIT at SL price (sells when price drops to SL)
+            # When one fills, Binance auto-cancels the other.
+            self._place_oco_sell(qty_str, tp_str, sl_str, sl_limit_str,
+                                tp_price, sl_price, results)
 
         except Exception as e:
             results["error"] = str(e)
-            logger.error("Order error: %s", e)
+            logger.error("❌ Order error: %s", e)
 
         return results
+
+    def _place_oco_sell(self, qty_str, tp_str, sl_str, sl_limit_str,
+                        tp_price, sl_price, results):
+        """
+        Place an OCO sell order with TP and SL.
+        Tries new Binance API format first, then old format, then SL-only fallback.
+        """
+        # ── Attempt 1: New Binance OCO format (2024+) ──
+        # Uses aboveType/belowType parameters
+        try:
+            oco = self.client.create_oco_order(
+                symbol=SYMBOL,
+                side="SELL",
+                quantity=qty_str,
+                aboveType="LIMIT_MAKER",
+                abovePrice=tp_str,
+                belowType="STOP_LOSS_LIMIT",
+                belowPrice=sl_limit_str,
+                belowStopPrice=sl_str,
+                belowTimeInForce="GTC",
+            )
+            results["oco"] = {
+                "orderListId": oco.get("orderListId"),
+                "tp_price": tp_price,
+                "sl_price": sl_price,
+                "status": oco.get("listOrderStatus", "PLACED"),
+            }
+            logger.info("✅ OCO sell placed (new format): TP=$%s, SL=$%s", tp_str, sl_str)
+            return
+        except Exception as e1:
+            logger.warning("OCO new format failed: %s — trying old format...", e1)
+
+        # ── Attempt 2: Old Binance OCO format (legacy) ──
+        try:
+            oco = self.client.create_oco_order(
+                symbol=SYMBOL,
+                side="SELL",
+                quantity=qty_str,
+                price=tp_str,
+                stopPrice=sl_str,
+                stopLimitPrice=sl_limit_str,
+                stopLimitTimeInForce="GTC",
+            )
+            results["oco"] = {
+                "orderListId": oco.get("orderListId"),
+                "tp_price": tp_price,
+                "sl_price": sl_price,
+                "status": oco.get("listOrderStatus", "PLACED"),
+            }
+            logger.info("✅ OCO sell placed (old format): TP=$%s, SL=$%s", tp_str, sl_str)
+            return
+        except Exception as e2:
+            logger.warning("OCO old format also failed: %s — trying raw API...", e2)
+
+        # ── Attempt 3: Direct API call (bypass python-binance wrapper) ──
+        try:
+            from binance.client import Client
+            params = {
+                "symbol": SYMBOL,
+                "side": "SELL",
+                "quantity": qty_str,
+                "aboveType": "LIMIT_MAKER",
+                "abovePrice": tp_str,
+                "belowType": "STOP_LOSS_LIMIT",
+                "belowPrice": sl_limit_str,
+                "belowStopPrice": sl_str,
+                "belowTimeInForce": "GTC",
+            }
+            # Use the new orderList/oco endpoint directly
+            oco = self.client._post("orderList/oco", signed=True, data=params)
+            results["oco"] = {
+                "orderListId": oco.get("orderListId"),
+                "tp_price": tp_price,
+                "sl_price": sl_price,
+                "status": oco.get("listOrderStatus", "PLACED"),
+            }
+            logger.info("✅ OCO sell placed (raw API): TP=$%s, SL=$%s", tp_str, sl_str)
+            return
+        except Exception as e3:
+            logger.warning("Raw OCO API also failed: %s — placing SL-only as last resort", e3)
+
+        # ── Attempt 4: SL-only fallback ──
+        # On Binance Spot, you can only have ONE sell order per quantity.
+        # OCO is the ONLY way to have both TP+SL. If all OCO attempts fail,
+        # we place the stop loss to protect capital. TP must be managed manually
+        # or by the bot's monitoring loop.
+        try:
+            sl_order = self.client.create_order(
+                symbol=SYMBOL,
+                side="SELL",
+                type="STOP_LOSS_LIMIT",
+                quantity=qty_str,
+                price=sl_limit_str,
+                stopPrice=sl_str,
+                timeInForce="GTC",
+            )
+            results["stop_loss"] = {
+                "orderId": sl_order["orderId"],
+                "stopPrice": sl_price,
+            }
+            results["warning"] = (
+                f"OCO order failed — only Stop Loss placed at ${sl_price}. "
+                f"Take Profit at ${tp_price} is NOT set. "
+                f"Monitor your position manually or close via the app."
+            )
+            logger.warning("⚠️ SL-only fallback: SL=$%s, NO TP SET!", sl_str)
+        except Exception as e4:
+            results["sl_error"] = str(e4)
+            results["warning"] = (
+                "CRITICAL: Neither OCO nor SL order could be placed. "
+                "Your BUY position has NO protection. Close manually!"
+            )
+            logger.error("❌ ALL order attempts failed. Position is UNPROTECTED: %s", e4)
 
     def close_position(self) -> Optional[dict]:
         """Close position by selling all BTC at market price."""
