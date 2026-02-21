@@ -201,6 +201,34 @@ class Predictor:
             result["risk_usd"] = round(risk, 2)
             result["reward_usd"] = round(reward, 2)
 
+            # Add estimated position sizing so user sees capital usage BEFORE accepting
+            try:
+                from ml_core.risk_manager import get_risk_manager
+                from ml_core.exchange import get_exchange
+                _rm = get_risk_manager()
+                # Try to get real Binance balance
+                try:
+                    _exch = get_exchange()
+                    _bal = _exch.get_available_balance()
+                    _rm.update_balance(_bal)
+                except Exception:
+                    pass  # use last known balance
+                sizing_est = _rm.calculate_position_size(
+                    entry_price=current_price,
+                    sl_price=sl_price,
+                    signal=signal,
+                )
+                if not sizing_est.get("error"):
+                    result["est_qty_btc"] = sizing_est["qty_btc"]
+                    result["est_notional_usd"] = sizing_est["notional_usd"]
+                    result["est_risk_usd"] = sizing_est["risk_usd"]
+                    result["est_capital_used_pct"] = sizing_est["capital_used_pct"]
+                    result["est_balance"] = sizing_est["balance"]
+                else:
+                    result["sizing_warning"] = sizing_est["error"]
+            except Exception as e:
+                logger.warning("Could not estimate position size: %s", e)
+
         if reject_reason:
             result["reject_reason"] = reject_reason
 

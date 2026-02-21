@@ -15,7 +15,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
     ACCOUNT_BALANCE, RISK_PER_TRADE, MAX_RISK_PER_TRADE,
-    MAX_POSITIONS, SL_ATR_MULT,
+    MAX_POSITIONS, MAX_POSITION_PCT, SL_ATR_MULT,
 )
 
 logger = logging.getLogger("sorbot.risk")
@@ -32,15 +32,23 @@ class RiskManager:
         self.balance = new_balance
         logger.info("Balance updated: $%.2f", self.balance)
 
+    # Binance BTCUSDT spot minimum notional is $10.
+    # We require $12 to cover the order + trading fees + rounding.
+    BINANCE_MIN_NOTIONAL = 12.0
+
     def can_trade(self) -> tuple:
         """Check if we can open a new trade. Returns (allowed, reason)."""
         if self.open_positions >= MAX_POSITIONS:
             return False, f"Max positions reached ({MAX_POSITIONS})"
         if self.balance <= 0:
             return False, "Zero balance"
-        min_trade = 10.0  # minimum $10 needed
-        if self.balance < min_trade:
-            return False, f"Balance too low: ${self.balance:.2f}"
+        if self.balance < self.BINANCE_MIN_NOTIONAL:
+            return False, (
+                f"Insufficient balance: ${self.balance:.2f}. "
+                f"Binance spot requires at least ${self.BINANCE_MIN_NOTIONAL:.0f} USDT "
+                f"(minimum notional $10 + fees buffer). "
+                f"Please deposit more USDT to continue trading."
+            )
         return True, "OK"
 
     def calculate_position_size(
@@ -82,13 +90,16 @@ class RiskManager:
         # Notional value
         notional = qty_btc * entry_price
 
-        # Cap at available balance (no leverage — can't spend more than we have)
-        max_notional = self.balance * 0.95  # 95% of balance to leave buffer
+        # Cap at MAX_POSITION_PCT of balance (default 30%) — never go all-in
+        max_notional = self.balance * MAX_POSITION_PCT
         if notional > max_notional:
             qty_btc = max_notional / entry_price
             notional = qty_btc * entry_price
             risk_usd = qty_btc * sl_distance
-            logger.warning("Position capped by balance. New qty: %.6f BTC", qty_btc)
+            logger.info(
+                "Position capped at %.0f%% of balance ($%.2f). Qty: %.6f BTC ($%.2f)",
+                MAX_POSITION_PCT * 100, max_notional, qty_btc, notional,
+            )
 
         # Round to Binance precision (5 decimals for BTC spot)
         qty_btc = round(qty_btc, 5)
@@ -96,16 +107,27 @@ class RiskManager:
             qty_btc = 0.00001  # minimum
 
         # Minimum notional check (Binance requires > $10 for BTCUSDT)
-        if notional < 10.0:
-            return {"qty_btc": 0, "error": f"Notional ${notional:.2f} below Binance minimum ($10)"}
+        if notional < self.BINANCE_MIN_NOTIONAL:
+            return {
+                "qty_btc": 0,
+                "error": (
+                    f"Order notional ${notional:.2f} below Binance minimum "
+                    f"(${self.BINANCE_MIN_NOTIONAL:.0f}). Need more USDT."
+                ),
+            }
+
+        capital_pct = (notional / self.balance * 100) if self.balance > 0 else 0
+        potential_loss = qty_btc * sl_distance
 
         result = {
             "qty_btc": qty_btc,
             "notional_usd": round(notional, 2),
-            "risk_usd": round(risk_usd, 2),
+            "risk_usd": round(potential_loss, 2),
             "risk_pct": round(risk_pct * 100, 2),
+            "capital_used_pct": round(capital_pct, 1),
             "sl_distance_usd": round(sl_distance, 2),
             "balance": round(self.balance, 2),
+            "max_position_pct": round(MAX_POSITION_PCT * 100, 0),
         }
         logger.info(
             "Position size: %.5f BTC ($%.2f notional, $%.2f risk)",

@@ -26,6 +26,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
 
 from config import API_HOST, API_PORT, SYMBOL
 from ml_core.data_loader import fetch_all_timeframes, fetch_ohlcv
@@ -152,6 +154,120 @@ async def predict():
 
 # ── TRADE ──────────────────────────────────────
 
+class ExecuteTradeRequest(BaseModel):
+    """Parameters for executing a trade with specific prediction values."""
+    signal: str            # LONG
+    entry_price: float     # price from accepted prediction
+    sl_price: float        # stop loss from accepted prediction
+    tp_price: float        # take profit from accepted prediction
+    qty_btc: Optional[float] = None   # pre-approved quantity from prediction estimate
+    symbol: Optional[str] = None
+
+
+@app.post("/execute")
+async def execute_trade(req: ExecuteTradeRequest):
+    """
+    Execute a trade on Binance using the EXACT parameters from an accepted prediction.
+    No new prediction is generated — uses the SL/TP/signal/qty the user accepted.
+    """
+    try:
+        # Spot trading: only LONG (BUY) is allowed
+        if req.signal == "SHORT":
+            return {
+                "action": "NO_TRADE",
+                "reason": "SHORT signal — spot trading is BUY-only.",
+            }
+
+        # Fetch REAL Binance balance
+        exchange = get_exchange()
+        try:
+            balance = exchange.get_available_balance()
+            risk_mgr.update_balance(balance)
+            logger.info("Binance available balance: $%.2f", balance)
+        except Exception as e:
+            logger.warning("Could not fetch Binance balance: %s", e)
+
+        # Check risk
+        can, reason = risk_mgr.can_trade()
+        if not can:
+            return {"action": "NO_TRADE", "reason": reason}
+
+        # Use pre-approved quantity from prediction if provided,
+        # otherwise recalculate (backward compatible)
+        if req.qty_btc and req.qty_btc > 0:
+            # User approved this exact quantity — use it directly
+            qty_btc = round(req.qty_btc, 5)
+            notional = qty_btc * req.entry_price
+
+            # Safety cap: never exceed MAX_POSITION_PCT of CURRENT balance
+            from config import MAX_POSITION_PCT
+            max_notional = risk_mgr.balance * MAX_POSITION_PCT
+            if notional > max_notional:
+                qty_btc = round(max_notional / req.entry_price, 5)
+                notional = qty_btc * req.entry_price
+                logger.warning(
+                    "Pre-approved qty exceeded current balance cap. "
+                    "Reduced from %.5f to %.5f BTC ($%.2f)",
+                    req.qty_btc, qty_btc, notional,
+                )
+
+            sl_distance = req.entry_price - req.sl_price
+            potential_loss = qty_btc * sl_distance if sl_distance > 0 else 0
+            capital_pct = (notional / risk_mgr.balance * 100) if risk_mgr.balance > 0 else 0
+
+            sizing = {
+                "qty_btc": qty_btc,
+                "notional_usd": round(notional, 2),
+                "risk_usd": round(potential_loss, 2),
+                "capital_used_pct": round(capital_pct, 1),
+                "balance": round(risk_mgr.balance, 2),
+                "source": "pre_approved",
+            }
+            logger.info(
+                "Using pre-approved qty: %.5f BTC ($%.2f, %.1f%% of balance)",
+                qty_btc, notional, capital_pct,
+            )
+        else:
+            # Fallback: calculate position size fresh
+            sizing = risk_mgr.calculate_position_size(
+                entry_price=req.entry_price,
+                sl_price=req.sl_price,
+                signal=req.signal,
+            )
+
+        if sizing.get("error"):
+            return {"action": "ERROR", "error": sizing["error"]}
+
+        # Place order with the EXACT SL/TP from the accepted prediction
+        order_result = exchange.place_order(
+            side=req.signal,
+            qty=sizing["qty_btc"],
+            sl_price=req.sl_price,
+            tp_price=req.tp_price,
+        )
+
+        if "error" in order_result:
+            return {"action": "ORDER_ERROR", "error": order_result["error"]}
+
+        risk_mgr.register_open()
+
+        return {
+            "action": "TRADE_EXECUTED",
+            "signal": {
+                "signal": req.signal,
+                "current_price": req.entry_price,
+                "sl_price": req.sl_price,
+                "tp_price": req.tp_price,
+            },
+            "sizing": sizing,
+            "orders": order_result,
+        }
+
+    except Exception as e:
+        logger.error("Execute trade error: %s", e)
+        raise HTTPException(500, str(e))
+
+
 @app.post("/trade")
 async def trade():
     """
@@ -183,18 +299,19 @@ async def trade():
                 "signal": signal,
             }
 
-        # Check risk
-        can, reason = risk_mgr.can_trade()
-        if not can:
-            return {"action": "BLOCKED", "reason": reason, "signal": signal}
-
-        # Get Binance balance
+        # Fetch REAL Binance balance FIRST before any risk checks
         exchange = get_exchange()
         try:
             balance = exchange.get_available_balance()
             risk_mgr.update_balance(balance)
-        except Exception:
-            logger.warning("Could not fetch Binance balance, using configured balance")
+            logger.info("Binance available balance: $%.2f", balance)
+        except Exception as e:
+            logger.warning("Could not fetch Binance balance: %s — using last known balance", e)
+
+        # Check risk (now using real balance)
+        can, reason = risk_mgr.can_trade()
+        if not can:
+            return {"action": "NO_TRADE", "reason": reason, "signal": signal}
 
         # Calculate position size
         sizing = risk_mgr.calculate_position_size(

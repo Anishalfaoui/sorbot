@@ -141,7 +141,15 @@ public class TradingService {
         }
 
         try {
-            Map<String, Object> tradeResult = aiEngineClient.executeTrade();
+            // Use the EXACT parameters from the accepted prediction,
+            // including the pre-approved quantity so execution matches what the user saw
+            Map<String, Object> tradeResult = aiEngineClient.executeTrade(
+                    prediction.getSignal(),
+                    prediction.getCurrentPrice(),
+                    prediction.getSlPrice(),
+                    prediction.getTpPrice(),
+                    prediction.getEstQtyBtc()
+            );
             String action = (String) tradeResult.getOrDefault("action", "UNKNOWN");
 
             if ("TRADE_EXECUTED".equals(action)) {
@@ -152,6 +160,13 @@ public class TradingService {
                 tradeRepo.save(trade);
 
                 log.info("MANUAL TRADE accepted: {} at {}", prediction.getSignal(), prediction.getCurrentPrice());
+            } else if ("NO_TRADE".equals(action) || "BLOCKED".equals(action) || "ERROR".equals(action)) {
+                // Insufficient balance, signal blocked, or other pre-trade check failed
+                String reason = (String) tradeResult.getOrDefault("reason",
+                        (String) tradeResult.getOrDefault("error", action));
+                prediction.setTradeStatus("INSUFFICIENT_FUNDS");
+                prediction.setRejectReason(reason);
+                log.warn("Trade blocked by AI engine: {}", reason);
             } else {
                 prediction.setTradeStatus("EXECUTION_FAILED");
                 String reason = (String) tradeResult.getOrDefault("reason",
@@ -163,12 +178,14 @@ public class TradingService {
             messagingTemplate.convertAndSend("/topic/predictions", prediction);
             messagingTemplate.convertAndSend("/topic/trades", tradeRepo.findTop50ByOrderByExecutedAtDesc());
 
-            return Map.of("status", "ok", "prediction", prediction, "tradeResult", tradeResult);
+            return Map.of("status", "ok", "predictionId", prediction.getId(),
+                    "tradeStatus", prediction.getTradeStatus(), "tradeResult", tradeResult);
         } catch (Exception e) {
             prediction.setTradeStatus("EXECUTION_FAILED");
-            prediction.setRejectReason(e.getMessage());
+            String errMsg = e.getMessage();
+            prediction.setRejectReason(errMsg != null && errMsg.length() > 500 ? errMsg.substring(0, 500) : errMsg);
             predictionRepo.save(prediction);
-            return Map.of("error", e.getMessage());
+            return Map.of("error", errMsg != null ? errMsg : "Trade execution failed");
         }
     }
 
@@ -288,6 +305,13 @@ public class TradingService {
         p.setRiskReward(getDouble(raw, "risk_reward"));
         p.setRejectReason(getString(raw, "reject_reason"));
         p.setConclusion(getString(raw, "conclusion"));
+
+        // Position sizing estimates
+        p.setEstQtyBtc(getDouble(raw, "est_qty_btc"));
+        p.setEstNotionalUsd(getDouble(raw, "est_notional_usd"));
+        p.setEstRiskUsd(getDouble(raw, "est_risk_usd"));
+        p.setEstCapitalUsedPct(getDouble(raw, "est_capital_used_pct"));
+        p.setEstBalance(getDouble(raw, "est_balance"));
 
         // Market analysis
         Map<String, Object> market = (Map<String, Object>) raw.get("market_analysis");

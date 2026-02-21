@@ -120,6 +120,7 @@ CONFIDENCE_SHORT = 0.35          # probability < 35% = go SHORT
 ACCOUNT_BALANCE = 500.0          # starting account in USD
 RISK_PER_TRADE = 0.015           # risk 1.5% per trade ($7.50)
 MAX_RISK_PER_TRADE = 0.02        # absolute max 2% ($10)
+MAX_POSITION_PCT = 0.30          # max 30% of balance per trade (prevents all-in)
 MAX_POSITIONS = 1                # only 1 open trade at a time
 
 # SL/TP (ATR-based)

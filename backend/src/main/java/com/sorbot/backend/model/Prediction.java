@@ -1,10 +1,12 @@
 package com.sorbot.backend.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "predictions")
+@JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 public class Prediction {
 
     @Id
@@ -23,6 +25,7 @@ public class Prediction {
     private Double slPrice;
     private Double tpPrice;
     private Double riskReward;
+    @Column(columnDefinition = "TEXT")
     private String rejectReason;
 
     // Market analysis fields
@@ -53,6 +56,13 @@ public class Prediction {
     private String tradeStatus;     // PENDING, ACCEPTED, REJECTED, AUTO_EXECUTED, SKIPPED
     private LocalDateTime tradeExecutedAt;
     private String tradeMode;       // AUTO, MANUAL
+
+    // Position sizing estimates (shown before accepting)
+    private Double estQtyBtc;
+    private Double estNotionalUsd;
+    private Double estRiskUsd;
+    private Double estCapitalUsedPct;
+    private Double estBalance;
 
     // Constructors
     public Prediction() {}
@@ -150,4 +160,19 @@ public class Prediction {
 
     public String getTradeMode() { return tradeMode; }
     public void setTradeMode(String tradeMode) { this.tradeMode = tradeMode; }
+
+    public Double getEstQtyBtc() { return estQtyBtc; }
+    public void setEstQtyBtc(Double estQtyBtc) { this.estQtyBtc = estQtyBtc; }
+
+    public Double getEstNotionalUsd() { return estNotionalUsd; }
+    public void setEstNotionalUsd(Double estNotionalUsd) { this.estNotionalUsd = estNotionalUsd; }
+
+    public Double getEstRiskUsd() { return estRiskUsd; }
+    public void setEstRiskUsd(Double estRiskUsd) { this.estRiskUsd = estRiskUsd; }
+
+    public Double getEstCapitalUsedPct() { return estCapitalUsedPct; }
+    public void setEstCapitalUsedPct(Double estCapitalUsedPct) { this.estCapitalUsedPct = estCapitalUsedPct; }
+
+    public Double getEstBalance() { return estBalance; }
+    public void setEstBalance(Double estBalance) { this.estBalance = estBalance; }
 }

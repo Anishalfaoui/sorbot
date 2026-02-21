@@ -43,7 +43,37 @@ public class AiEngineClient {
     }
 
     /**
-     * POST /trade — Execute trade on Binance via AI engine.
+     * POST /execute — Execute trade with specific prediction parameters.
+     * Passes the pre-approved quantity so execution matches what the user saw.
+     */
+    public Map<String, Object> executeTrade(String signal, double entryPrice, double slPrice, double tpPrice, Double estQtyBtc) {
+        try {
+            Map<String, Object> body = new java.util.LinkedHashMap<>();
+            body.put("signal", signal);
+            body.put("entry_price", entryPrice);
+            body.put("sl_price", slPrice);
+            body.put("tp_price", tpPrice);
+            if (estQtyBtc != null && estQtyBtc > 0) {
+                body.put("qty_btc", estQtyBtc);
+            }
+
+            String json = webClient.post()
+                    .uri("/execute")
+                    .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                    .bodyValue(body)
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .block();
+
+            return objectMapper.readValue(json, Map.class);
+        } catch (Exception e) {
+            log.error("Failed to execute trade via AI engine: {}", e.getMessage());
+            throw new RuntimeException("Trade execution failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * POST /trade — Execute trade on Binance via AI engine (auto mode, generates new prediction).
      */
     public Map<String, Object> executeTrade() {
         try {
