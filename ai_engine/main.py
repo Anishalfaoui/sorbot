@@ -11,6 +11,14 @@ Endpoints:
   GET  /status        — account & position status
   POST /close         — close open position
   GET  /model-info    — model metrics & top features
+  GET  /retrain-status  — continuous retraining scheduler status
+  POST /retrain-now     — manually trigger immediate retrain
+  GET  /retrain-history — full retraining history log
+
+Continuous Retraining:
+  The model automatically retrains every RETRAIN_INTERVAL_HOURS (default 6h)
+  on fresh market data. New models must pass a validation gate (metrics
+  comparison) before replacing the current model.
 """
 
 import logging
@@ -26,6 +34,7 @@ from ml_core.trainer import train_model
 from ml_core.predictor import Predictor
 from ml_core.risk_manager import RiskManager, get_risk_manager
 from ml_core.exchange import BinanceExchange, get_exchange
+from ml_core.retrainer import RetrainingScheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,17 +45,34 @@ logger = logging.getLogger("sorbot.api")
 # ── Globals ────────────────────────────────────
 predictor = Predictor()
 risk_mgr = get_risk_manager()
+retrain_scheduler = RetrainingScheduler(predictor)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load model on startup."""
+    """Load model on startup, start retraining scheduler."""
     try:
         predictor.load()
         logger.info("Model loaded on startup")
     except FileNotFoundError:
-        logger.warning("No trained model found. Train first via POST /train")
+        logger.warning("No trained model found. Training initial model...")
+        try:
+            data = fetch_all_timeframes()
+            htf_data = {"4h": data.get("4h"), "1d": data.get("1d")}
+            dataset = build_dataset(data["1h"], include_target=True, htf_data=htf_data)
+            train_model(dataset)
+            predictor.load()
+            logger.info("Initial model trained and loaded")
+        except Exception as e:
+            logger.error("Initial training failed: %s. Train manually via POST /train", e)
+
+    # Start continuous retraining
+    retrain_scheduler.start()
+
     yield
+
+    # Shutdown
+    retrain_scheduler.stop()
 
 
 app = FastAPI(
@@ -73,6 +99,8 @@ async def health():
         "engine": "Sorbot AI v3.0",
         "symbol": SYMBOL,
         "model_loaded": predictor._loaded,
+        "retraining_enabled": retrain_scheduler._running,
+        "total_retrains": retrain_scheduler._retrain_count,
     }
 
 
@@ -253,6 +281,39 @@ async def model_info():
     if not predictor._loaded:
         raise HTTPException(400, "Model not trained. POST /train first.")
     return predictor.get_model_info()
+
+
+# ── CONTINUOUS RETRAINING ──────────────────────
+
+@app.get("/retrain-status")
+async def retrain_status():
+    """Get continuous retraining scheduler status and history."""
+    return retrain_scheduler.get_status()
+
+
+@app.post("/retrain-now")
+async def retrain_now():
+    """
+    Manually trigger an immediate retrain cycle.
+    This bypasses the schedule and validation gate — the new model
+    is always accepted (force=True).
+    """
+    try:
+        result = retrain_scheduler.force_retrain()
+        return result
+    except Exception as e:
+        logger.error("Manual retrain error: %s", e)
+        raise HTTPException(500, str(e))
+
+
+@app.get("/retrain-history")
+async def retrain_history():
+    """Get full retraining history."""
+    status = retrain_scheduler.get_status()
+    return {
+        "total_retrains": status["total_retrains"],
+        "history": status["recent_history"],
+    }
 
 
 # ── RUN ────────────────────────────────────────

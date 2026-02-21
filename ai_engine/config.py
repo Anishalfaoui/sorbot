@@ -129,6 +129,14 @@ TRAILING_STOP_ATR = 1.0          # optional trailing stop at 1x ATR
 MIN_RR_RATIO = 1.8               # minimum reward:risk to enter
 
 # ──────────────────────────────────────────────
+# CONTINUOUS RETRAINING
+# ──────────────────────────────────────────────
+RETRAIN_ENABLED = os.getenv("RETRAIN_ENABLED", "true").lower() == "true"
+RETRAIN_INTERVAL_HOURS = int(os.getenv("RETRAIN_INTERVAL_HOURS", "6"))   # retrain every 6h
+RETRAIN_FORCE_AFTER_HOURS = int(os.getenv("RETRAIN_FORCE_AFTER_HOURS", "24"))  # force retrain if model >24h old
+RETRAIN_MIN_IMPROVEMENT = float(os.getenv("RETRAIN_MIN_IMPROVEMENT", "0.03"))  # allow up to 3% metric degradation
+
+# ──────────────────────────────────────────────
 # SERVER
 # ──────────────────────────────────────────────
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
