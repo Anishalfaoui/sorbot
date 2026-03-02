@@ -39,9 +39,9 @@ services:
       - "8081:8081"
     environment:
       - AI_ENGINE_URL=http://ai-engine:8000
-      - SPRING_DATASOURCE_URL=jdbc:h2:file:/app/data/sorbot_db;DB_CLOSE_DELAY=-1
-    volumes:
-      - backend-data:/app/data
+      - SUPABASE_DB_URL=${SUPABASE_DB_URL}
+      - SUPABASE_DB_USERNAME=${SUPABASE_DB_USERNAME}
+      - SUPABASE_DB_PASSWORD=${SUPABASE_DB_PASSWORD}
     depends_on:
       ai-engine:
         condition: service_healthy
@@ -67,4 +67,3 @@ services:
 volumes:
   ai-data:
   ai-models:
-  backend-data:

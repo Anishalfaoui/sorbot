@@ -14,9 +14,6 @@ FROM eclipse-temurin:17-jre-alpine
 
 WORKDIR /app
 
-# Create data dir for H2 database
-RUN mkdir -p data
-
 COPY --from=build /app/target/sorbot-backend-1.0.0.jar app.jar
 
 EXPOSE 8081

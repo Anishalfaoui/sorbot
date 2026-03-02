@@ -20,7 +20,7 @@ Sorbot is a **distributed algorithmic trading system** that uses machine learnin
   - [Backtester](#backtester)
 - [Backend (Java / Spring Boot)](#backend-java--spring-boot)
   - [API Endpoints](#backend-api-endpoints)
-  - [Database Schema](#database-schema-h2)
+  - [Database Schema](#database-schema-postgresql)
   - [Scheduler & Trading Logic](#scheduler--trading-logic)
   - [WebSocket (Real-Time Updates)](#websocket-real-time-updates)
 - [Frontend (React)](#frontend-react)
@@ -45,8 +45,8 @@ Sorbot is a **distributed algorithmic trading system** that uses machine learnin
                                           │                                  │
                                           ▼                                  ▼
                                    ┌──────────────┐                   ┌──────────────┐
-                                   │   H2 File DB │                   │   Binance    │
-                                   │  sorbot_db   │                   │  Spot API    │
+                                   │  PostgreSQL  │                   │   Binance    │
+                                   │  (Supabase)  │                   │  Spot API    │
                                    └──────────────┘                   └──────────────┘
                                                                              │
                                                                       ┌──────────────┐
@@ -64,7 +64,7 @@ Sorbot is a **distributed algorithmic trading system** that uses machine learnin
 | Service | Stack | Port | Role |
 |---------|-------|------|------|
 | **AI Engine** | Python 3.11, FastAPI, XGBoost | 8000 | ML model training, predictions, trade execution, self-retraining |
-| **Backend** | Java 17, Spring Boot 3.2.3, H2 | 8081 | REST API gateway, persistence, scheduling, WebSocket broker |
+| **Backend** | Java 17, Spring Boot 3.2.3, PostgreSQL (Supabase) | 8081 | REST API gateway, persistence, scheduling, WebSocket broker |
 | **Frontend** | React 19, Vite 5, Nginx | 3000 | SPA dashboard for monitoring and controlling the bot |
 
 ---
@@ -358,7 +358,7 @@ Simulates the full trading strategy on historical data using the same logic as l
 
 The middleware layer that sits between the frontend and AI engine. Located in `backend/`.
 
-**Tech stack:** Java 17, Spring Boot 3.2.3, Spring Data JPA, H2 database, WebFlux WebClient, STOMP WebSocket, Lombok
+**Tech stack:** Java 17, Spring Boot 3.2.3, Spring Data JPA, PostgreSQL (Supabase), WebFlux WebClient, STOMP WebSocket, Lombok
 
 ### Backend API Endpoints
 
@@ -400,9 +400,9 @@ The middleware layer that sits between the frontend and AI engine. Located in `b
 
 ---
 
-### Database Schema (H2)
+### Database Schema (PostgreSQL)
 
-The backend uses an H2 file-based database (`data/sorbot_db`) with auto DDL generation.
+The backend uses a PostgreSQL database hosted on Supabase with auto DDL generation via Hibernate.
 
 #### `predictions` Table
 
@@ -593,7 +593,7 @@ All feature engineering, model training, prediction, and risk management paramet
 | Property | Default | Description |
 |----------|---------|-------------|
 | `server.port` | 8081 | Backend server port |
-| `spring.datasource.url` | `jdbc:h2:file:./data/sorbot_db` | Database path |
+| `spring.datasource.url` | `jdbc:postgresql://...pooler.supabase.com:5432/postgres` | Supabase PostgreSQL URL |
 | `ai.engine.base-url` | `http://localhost:8000` | AI engine URL |
 | `ai.engine.timeout` | 120s | AI engine request timeout |
 | `trading.mode` | MANUAL | Initial trading mode |
@@ -646,30 +646,18 @@ docker compose up -d
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-### 5. Access the H2 Database Console
+### 5. Access the Database
 
-Sorbot uses an embedded **H2** file-based database to store users, trades, predictions, and settings. While the backend is running, you can inspect the database through the built-in H2 web console:
+Sorbot uses a **PostgreSQL** database hosted on **Supabase** to store users, trades, predictions, and settings. You can inspect the database through the Supabase dashboard:
 
-**URL:** [http://localhost:8081/h2](http://localhost:8081/h2)
+**URL:** [https://supabase.com/dashboard](https://supabase.com/dashboard)
 
-Use the following credentials to connect:
-
-| Field | Value |
-|-------|-------|
-| **Driver Class** | `org.h2.Driver` |
-| **JDBC URL** | `jdbc:h2:file:/app/data/sorbot_db` (Docker) or `jdbc:h2:file:./data/sorbot_db` (local) |
-| **User Name** | `sa` |
-| **Password** | *(leave empty)* |
-
-> **Note:** When running via Docker Compose, the database file lives inside the `backend-data` Docker volume at `/app/data/sorbot_db.mv.db`. Use the Docker JDBC URL above. When running locally with `mvn spring-boot:run`, the file is created at `backend/data/sorbot_db.mv.db` — use the local JDBC URL instead.
-
-Once connected, you can run SQL queries such as:
+Navigate to your project's **Table Editor** or **SQL Editor** to run queries such as:
 
 ```sql
-SHOW TABLES;
-SELECT * FROM USERS;
-SELECT * FROM TRADES;
-SELECT * FROM PREDICTIONS;
+SELECT * FROM users;
+SELECT * FROM trades;
+SELECT * FROM predictions;
 ```
 
 ### 6. Stop all services
@@ -782,7 +770,7 @@ sorbot/
    If signal = LONG + confidence ≥ 65%:
    TradingService → AiEngineClient → AI Engine POST /trade
    → RiskManager validates → BinanceExchange places market BUY + OCO SL/TP
-   → Trade saved to H2 → WebSocket broadcast to frontend
+   → Trade saved to PostgreSQL → WebSocket broadcast to frontend
 
 3. MANUAL MODE
    Prediction saved as PENDING → displayed in dashboard

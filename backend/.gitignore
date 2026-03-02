@@ -20,7 +20,7 @@ target/
 *.log
 hs_err_pid*
 
-# H2 Database
+# Database artifacts
 *.mv.db
 *.trace.db
 
