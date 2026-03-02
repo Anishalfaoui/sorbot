@@ -8,6 +8,37 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+// ── Attach JWT token to every request ──
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// ── Handle 401 responses (expired/invalid token) ──
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      // Don't redirect if we're already on an auth endpoint
+      const url = error.config?.url || '';
+      if (!url.includes('/auth/')) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        window.location.reload();
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
+// ── Auth ──
+export const login = (data) => api.post('/auth/login', data);
+export const register = (data) => api.post('/auth/register', data);
+export const getMe = () => api.get('/auth/me');
+
 // ── Predictions ──
 export const fetchPrediction = () => api.post('/predictions/fetch');
 export const getPredictions = () => api.get('/predictions');

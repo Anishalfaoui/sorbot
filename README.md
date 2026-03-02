@@ -646,7 +646,33 @@ docker compose up -d
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-### 5. Stop all services
+### 5. Access the H2 Database Console
+
+Sorbot uses an embedded **H2** file-based database to store users, trades, predictions, and settings. While the backend is running, you can inspect the database through the built-in H2 web console:
+
+**URL:** [http://localhost:8081/h2](http://localhost:8081/h2)
+
+Use the following credentials to connect:
+
+| Field | Value |
+|-------|-------|
+| **Driver Class** | `org.h2.Driver` |
+| **JDBC URL** | `jdbc:h2:file:/app/data/sorbot_db` (Docker) or `jdbc:h2:file:./data/sorbot_db` (local) |
+| **User Name** | `sa` |
+| **Password** | *(leave empty)* |
+
+> **Note:** When running via Docker Compose, the database file lives inside the `backend-data` Docker volume at `/app/data/sorbot_db.mv.db`. Use the Docker JDBC URL above. When running locally with `mvn spring-boot:run`, the file is created at `backend/data/sorbot_db.mv.db` — use the local JDBC URL instead.
+
+Once connected, you can run SQL queries such as:
+
+```sql
+SHOW TABLES;
+SELECT * FROM USERS;
+SELECT * FROM TRADES;
+SELECT * FROM PREDICTIONS;
+```
+
+### 6. Stop all services
 
 ```cmd
 stop.bat
