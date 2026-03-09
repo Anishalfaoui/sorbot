@@ -213,15 +213,6 @@ export default function PredictionCard({ prediction, mode, onAccept, onReject, a
         )}
       </div>
 
-      {/* Conclusion */}
-      {p.conclusion && (
-        <div className="conclusion-box">
-          <strong>🧠 AI Conclusion:</strong>
-          <br />
-          {p.conclusion}
-        </div>
-      )}
-
       {/* Reject reason */}
       {p.rejectReason && (
         <div className="conclusion-box" style={{ borderColor: 'var(--red)', marginTop: 8 }}>
