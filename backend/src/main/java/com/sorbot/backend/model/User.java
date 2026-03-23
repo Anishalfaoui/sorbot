@@ -40,6 +40,10 @@ public class User implements UserDetails {
     @Builder.Default
     private LocalDateTime createdAt = LocalDateTime.now();
 
+    @Column(name = "virtual_balance")
+    @Builder.Default
+    private Double virtualBalance = 10000.0;
+
     public enum Role {
         USER, ADMIN
     }

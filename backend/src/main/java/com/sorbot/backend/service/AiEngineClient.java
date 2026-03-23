@@ -27,10 +27,14 @@ public class AiEngineClient {
     /**
      * GET /predict — Get latest AI prediction with enriched analysis.
      */
-    public Map<String, Object> getPrediction() {
+    public Map<String, Object> getPrediction(String symbol, double virtualBalance) {
         try {
             String json = webClient.get()
-                    .uri("/predict")
+                    .uri(uriBuilder -> uriBuilder
+                            .path("/predict")
+                            .queryParam("symbol", symbol)
+                            .queryParam("virtual_balance", virtualBalance)
+                            .build())
                     .retrieve()
                     .bodyToMono(String.class)
                     .block();
@@ -46,13 +50,23 @@ public class AiEngineClient {
      * POST /execute — Execute trade with specific prediction parameters.
      * Passes the pre-approved quantity so execution matches what the user saw.
      */
-    public Map<String, Object> executeTrade(String signal, double entryPrice, double slPrice, double tpPrice, Double estQtyBtc) {
+    public Map<String, Object> executeTrade(
+            String signal,
+            double entryPrice,
+            double slPrice,
+            double tpPrice,
+            Double estQtyBtc,
+            String symbol,
+            double virtualBalance
+    ) {
         try {
             Map<String, Object> body = new java.util.LinkedHashMap<>();
             body.put("signal", signal);
             body.put("entry_price", entryPrice);
             body.put("sl_price", slPrice);
             body.put("tp_price", tpPrice);
+            body.put("symbol", symbol);
+            body.put("virtual_balance", virtualBalance);
             if (estQtyBtc != null && estQtyBtc > 0) {
                 body.put("qty_btc", estQtyBtc);
             }
@@ -75,10 +89,14 @@ public class AiEngineClient {
     /**
      * POST /trade — Execute trade on Binance via AI engine (auto mode, generates new prediction).
      */
-    public Map<String, Object> executeTrade() {
+    public Map<String, Object> executeTrade(String symbol, double virtualBalance) {
         try {
             String json = webClient.post()
-                    .uri("/trade")
+                    .uri(uriBuilder -> uriBuilder
+                            .path("/trade")
+                            .queryParam("symbol", symbol)
+                            .queryParam("virtual_balance", virtualBalance)
+                            .build())
                     .retrieve()
                     .bodyToMono(String.class)
                     .block();
@@ -111,10 +129,14 @@ public class AiEngineClient {
     /**
      * GET /status — Get account status from AI engine.
      */
-    public Map<String, Object> getStatus() {
+    public Map<String, Object> getStatus(String symbol, double virtualBalance) {
         try {
             String json = webClient.get()
-                    .uri("/status")
+                    .uri(uriBuilder -> uriBuilder
+                            .path("/status")
+                            .queryParam("symbol", symbol)
+                            .queryParam("virtual_balance", virtualBalance)
+                            .build())
                     .retrieve()
                     .bodyToMono(String.class)
                     .block();
@@ -129,10 +151,13 @@ public class AiEngineClient {
     /**
      * POST /close — Close open position.
      */
-    public Map<String, Object> closePosition() {
+    public Map<String, Object> closePosition(String symbol) {
         try {
             String json = webClient.post()
-                    .uri("/close")
+                    .uri(uriBuilder -> uriBuilder
+                            .path("/close")
+                            .queryParam("symbol", symbol)
+                            .build())
                     .retrieve()
                     .bodyToMono(String.class)
                     .block();
@@ -147,10 +172,13 @@ public class AiEngineClient {
     /**
      * GET /model-info — Get model metrics.
      */
-    public Map<String, Object> getModelInfo() {
+    public Map<String, Object> getModelInfo(String symbol) {
         try {
             String json = webClient.get()
-                    .uri("/model-info")
+                    .uri(uriBuilder -> uriBuilder
+                            .path("/model-info")
+                            .queryParam("symbol", symbol)
+                            .build())
                     .retrieve()
                     .bodyToMono(String.class)
                     .block();
@@ -165,10 +193,13 @@ public class AiEngineClient {
     /**
      * GET / — Health check.
      */
-    public Map<String, Object> healthCheck() {
+    public Map<String, Object> healthCheck(String symbol) {
         try {
             String json = webClient.get()
-                    .uri("/")
+                    .uri(uriBuilder -> uriBuilder
+                            .path("/")
+                            .queryParam("symbol", symbol)
+                            .build())
                     .retrieve()
                     .bodyToMono(String.class)
                     .block();
@@ -177,6 +208,28 @@ public class AiEngineClient {
         } catch (Exception e) {
             log.error("AI Engine health check failed: {}", e.getMessage());
             return Map.of("status", "unreachable", "error", e.getMessage());
+        }
+    }
+
+    /**
+     * GET /price — latest price for a symbol.
+     */
+    public double getPrice(String symbol) {
+        try {
+            String json = webClient.get()
+                    .uri(uriBuilder -> uriBuilder
+                            .path("/price")
+                            .queryParam("symbol", symbol)
+                            .build())
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .block();
+
+            JsonNode node = objectMapper.readTree(json);
+            return node.path("price").asDouble();
+        } catch (Exception e) {
+            log.error("Failed to get price: {}", e.getMessage());
+            throw new RuntimeException("Price fetch failed: " + e.getMessage(), e);
         }
     }
 }

@@ -10,7 +10,10 @@ import java.util.List;
 @Repository
 public interface PredictionRepository extends JpaRepository<Prediction, Long> {
     List<Prediction> findTop50ByOrderByTimestampDesc();
+    List<Prediction> findTop50ByUserIdOrderByTimestampDesc(Long userId);
+    List<Prediction> findByUserIdAndSignalNotOrderByTimestampDesc(Long userId, String signal);
     List<Prediction> findByTimestampAfterOrderByTimestampDesc(LocalDateTime after);
     List<Prediction> findByTradeStatusOrderByTimestampDesc(String tradeStatus);
+    List<Prediction> findByUserIdAndTradeStatusOrderByTimestampDesc(Long userId, String tradeStatus);
     List<Prediction> findBySignalNotOrderByTimestampDesc(String signal);
 }

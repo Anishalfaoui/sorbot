@@ -1,5 +1,7 @@
 # Maven build output
 target/
+out/
+dependency-reduced-pom.xml
 
 # IDE
 .idea/
@@ -19,6 +21,11 @@ target/
 # Logs
 *.log
 hs_err_pid*
+logs/
+
+# Environment
+.env
+.env.*
 
 # Database artifacts
 *.mv.db

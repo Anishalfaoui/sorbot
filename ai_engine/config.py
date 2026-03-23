@@ -1,8 +1,8 @@
 """
 Sorbot AI Engine v3.0 — Central Configuration
-================================================
-BTC/USD only · Binance Spot · XGBoost walk-forward
-$500 account · Conservative risk · No leverage
+=============================================
+Multi-symbol prediction engine (BTC/USD, EUR/USD, XAU/USD)
+Paper-trading defaults for virtual accounts.
 """
 
 import os
@@ -22,18 +22,39 @@ DATA_DIR.mkdir(exist_ok=True)
 MODEL_DIR.mkdir(exist_ok=True)
 
 # ──────────────────────────────────────────────
-# BINANCE API  (set in .env or environment)
+# SYMBOLS
 # ──────────────────────────────────────────────
-BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
-BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
-BINANCE_TESTNET = os.getenv("BINANCE_TESTNET", "false").lower() == "true"
+DEFAULT_SYMBOL = os.getenv("DEFAULT_SYMBOL", "BTCUSD").upper()
 
-# ──────────────────────────────────────────────
-# SYMBOL
-# ──────────────────────────────────────────────
-SYMBOL = "BTCUSDT"               # Binance symbol
-YFINANCE_TICKER = "BTC-USD"      # yfinance ticker for historical
-DECIMALS = 2
+SYMBOLS = {
+    "BTCUSD": {
+        "label": "BTC/USD",
+        "yfinance": "BTC-USD",
+        "decimals": 2,
+        "model_file": "BTCUSD_xgb.json",
+        "meta_file": "BTCUSD_meta.json",
+        "legacy_model_file": "btc_model.json",
+        "legacy_meta_file": "btc_meta.json",
+    },
+    "EURUSD": {
+        "label": "EUR/USD",
+        "yfinance": "EURUSD=X",
+        "decimals": 5,
+        "model_file": "EURUSD_xgb.json",
+        "meta_file": "EURUSD_meta.json",
+        "legacy_model_file": None,
+        "legacy_meta_file": None,
+    },
+    "XAUUSD": {
+        "label": "XAU/USD",
+        "yfinance": "XAUUSD=X",
+        "decimals": 2,
+        "model_file": "XAUUSD_xgb.json",
+        "meta_file": "XAUUSD_meta.json",
+        "legacy_model_file": None,
+        "legacy_meta_file": None,
+    },
+}
 
 # ──────────────────────────────────────────────
 # TIMEFRAMES
@@ -115,9 +136,9 @@ CONFIDENCE_SHORT = 0.35          # probability < 35% = go SHORT
 # Between 0.35 and 0.65 = NO TRADE (uncertain zone)
 
 # ──────────────────────────────────────────────
-# RISK MANAGEMENT  (conservative for $500 spot)
+# RISK MANAGEMENT (virtual account defaults)
 # ──────────────────────────────────────────────
-ACCOUNT_BALANCE = 500.0          # starting account in USD
+ACCOUNT_BALANCE = 10000.0        # default virtual balance per user in USD
 RISK_PER_TRADE = 0.015           # risk 1.5% per trade ($7.50)
 MAX_RISK_PER_TRADE = 0.02        # absolute max 2% ($10)
 MAX_POSITION_PCT = 0.30          # max 30% of balance per trade (prevents all-in)

@@ -69,6 +69,7 @@ public class AuthController {
                         .username(user.getUsername())
                         .email(user.getEmail())
                         .role(user.getRole().name())
+                        .virtualBalance(user.getVirtualBalance())
                         .message("Registration successful")
                         .build());
     }
@@ -99,6 +100,7 @@ public class AuthController {
                 .username(user.getUsername())
                 .email(user.getEmail())
                 .role(user.getRole().name())
+                .virtualBalance(user.getVirtualBalance())
                 .message("Login successful")
                 .build());
     }
@@ -114,6 +116,7 @@ public class AuthController {
                     .username(user.getUsername())
                     .email(user.getEmail())
                     .role(user.getRole().name())
+                    .virtualBalance(user.getVirtualBalance())
                     .build());
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)

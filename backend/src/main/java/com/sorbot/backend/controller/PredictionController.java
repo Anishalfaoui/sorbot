@@ -39,8 +39,8 @@ public class PredictionController {
      * POST /api/predictions/fetch — Manually trigger a new prediction.
      */
     @PostMapping("/fetch")
-    public Prediction fetchNewPrediction() {
-        return tradingService.fetchNewPrediction();
+    public Prediction fetchNewPrediction(@RequestParam(required = false, defaultValue = "BTCUSD") String symbol) {
+        return tradingService.fetchNewPrediction(symbol);
     }
 
     /**

@@ -21,26 +21,39 @@ import xgboost as xgb
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
-    MODEL_DIR,
+    MODEL_DIR, DEFAULT_SYMBOL, SYMBOLS,
     CONFIDENCE_LONG, CONFIDENCE_SHORT,
     SL_ATR_MULT, TP_ATR_MULT, MIN_RR_RATIO,
 )
-import requests
 
 from ml_core.feature_eng import get_atr, get_market_analysis
 
 logger = logging.getLogger("sorbot.predictor")
 
 
-def _get_binance_price(symbol: str = "BTCUSDT") -> float:
-    """Fetch real-time price from Binance public API (no auth needed)."""
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-    resp = requests.get(url, timeout=5)
-    resp.raise_for_status()
-    return float(resp.json()["price"])
+def _normalize_symbol(symbol: str) -> str:
+    key = (symbol or DEFAULT_SYMBOL).upper().replace("/", "")
+    if key not in SYMBOLS:
+        raise ValueError(f"Unsupported symbol '{symbol}'. Allowed: {', '.join(SYMBOLS.keys())}")
+    return key
 
-MODEL_FILE = MODEL_DIR / "btc_model.json"
-META_FILE = MODEL_DIR / "btc_meta.json"
+
+def _get_model_paths(symbol: str):
+    s = _normalize_symbol(symbol)
+    cfg = SYMBOLS[s]
+    model_file = MODEL_DIR / cfg["model_file"]
+    meta_file = MODEL_DIR / cfg["meta_file"]
+    if model_file.exists() and meta_file.exists():
+        return model_file, meta_file
+
+    # Backward-compatibility for legacy BTC model names
+    if cfg.get("legacy_model_file") and cfg.get("legacy_meta_file"):
+        legacy_model = MODEL_DIR / cfg["legacy_model_file"]
+        legacy_meta = MODEL_DIR / cfg["legacy_meta_file"]
+        if legacy_model.exists() and legacy_meta.exists():
+            return legacy_model, legacy_meta
+
+    return model_file, meta_file
 
 
 class Predictor:
@@ -53,19 +66,26 @@ class Predictor:
         self._booster = None
         self._meta = None
         self._loaded = False
+        self._loaded_symbol = None
 
     # ── Load model ───────────────────────────────
 
-    def load(self):
-        if not MODEL_FILE.exists():
-            raise FileNotFoundError(f"No model at {MODEL_FILE}. Train first.")
+    def load(self, symbol: str = DEFAULT_SYMBOL):
+        symbol = _normalize_symbol(symbol)
+        if self._loaded and self._loaded_symbol == symbol:
+            return
+
+        model_file, meta_file = _get_model_paths(symbol)
+        if not model_file.exists():
+            raise FileNotFoundError(f"No model at {model_file}. Train first.")
         self._booster = xgb.Booster()
-        self._booster.load_model(str(MODEL_FILE))
-        with open(META_FILE) as f:
+        self._booster.load_model(str(model_file))
+        with open(meta_file) as f:
             self._meta = json.load(f)
         self._loaded = True
+        self._loaded_symbol = symbol
         n_feat = self._meta.get("n_features", "?")
-        logger.info("Model loaded: %s features, trained %s", n_feat, self._meta.get("trained_at", "?"))
+        logger.info("Model loaded for %s: %s features, trained %s", symbol, n_feat, self._meta.get("trained_at", "?"))
 
     # ── Raw predict ──────────────────────────────
 
@@ -80,6 +100,8 @@ class Predictor:
         self,
         dataset: pd.DataFrame,
         ohlcv_1h: pd.DataFrame,
+        symbol: str = DEFAULT_SYMBOL,
+        virtual_balance: float = 10000.0,
     ) -> dict:
         """
         Predict latest bar with ENRICHED context.
@@ -91,6 +113,9 @@ class Predictor:
         Returns:
             dict with signal, confidence, market analysis, and conclusion
         """
+        symbol = _normalize_symbol(symbol)
+        symbol_label = SYMBOLS[symbol]["label"]
+
         feature_cols = [c for c in dataset.columns if c != "target"]
         trained_features = self._meta.get("feature_names", feature_cols)
 
@@ -115,14 +140,7 @@ class Predictor:
         high = ohlcv_1h["High"]
         low = ohlcv_1h["Low"]
 
-        # Use Binance real-time price instead of yfinance last candle close
-        try:
-            current_price = _get_binance_price()
-            logger.info("Binance live price: $%.2f (yfinance last close: $%.2f)",
-                        current_price, float(close.iloc[-1]))
-        except Exception as e:
-            logger.warning("Binance price fetch failed (%s), falling back to yfinance", e)
-            current_price = float(close.iloc[-1])
+        current_price = float(close.iloc[-1])
 
         atr_val = float(get_atr(high, low, close).iloc[-1])
         atr_pct = atr_val / current_price
@@ -169,6 +187,7 @@ class Predictor:
         # ── Conclusion Message ───────────────────
         conclusion = _build_conclusion(
             signal=signal,
+            symbol_label=symbol_label,
             prob_up=prob_up,
             current_price=current_price,
             market=market,
@@ -182,7 +201,7 @@ class Predictor:
         # ── Build Response ───────────────────────
         result = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "symbol": "BTC/USD",
+            "symbol": symbol_label,
             "signal": signal,
             "probability_up": round(prob_up, 4),
             "probability_down": round(prob_down, 4),
@@ -203,16 +222,8 @@ class Predictor:
 
             # Add estimated position sizing so user sees capital usage BEFORE accepting
             try:
-                from ml_core.risk_manager import get_risk_manager
-                from ml_core.exchange import get_exchange
-                _rm = get_risk_manager()
-                # Try to get real Binance balance
-                try:
-                    _exch = get_exchange()
-                    _bal = _exch.get_available_balance()
-                    _rm.update_balance(_bal)
-                except Exception:
-                    pass  # use last known balance
+                from ml_core.risk_manager import RiskManager
+                _rm = RiskManager(balance=max(float(virtual_balance or 0), 0.0))
                 sizing_est = _rm.calculate_position_size(
                     entry_price=current_price,
                     sl_price=sl_price,
@@ -356,6 +367,7 @@ def _assess_htf_alignment(features_row: pd.Series, feature_cols: list) -> dict:
 
 def _build_conclusion(
     signal: str,
+    symbol_label: str,
     prob_up: float,
     current_price: float,
     market: dict,
@@ -372,7 +384,7 @@ def _build_conclusion(
 
     # Header
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    lines.append(f"=== SORBOT BTC/USD ANALYSIS — {ts} ===")
+    lines.append(f"=== SORBOT {symbol_label} ANALYSIS — {ts} ===")
     lines.append("")
 
     # Price & confidence

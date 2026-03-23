@@ -32,6 +32,7 @@ export default function Login({ onLogin }) {
           username: data.username,
           email: data.email,
           role: data.role,
+          virtualBalance: data.virtualBalance,
         }));
         onLogin(data);
       } else {

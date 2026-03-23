@@ -23,14 +23,23 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
-    MODEL_DIR, XGB_PARAMS,
+    MODEL_DIR, XGB_PARAMS, DEFAULT_SYMBOL, SYMBOLS,
     WF_N_SPLITS, WF_TEST_SIZE, EARLY_STOPPING_ROUNDS,
 )
 
 logger = logging.getLogger("sorbot.trainer")
 
-MODEL_FILE = MODEL_DIR / "btc_model.json"
-META_FILE = MODEL_DIR / "btc_meta.json"
+def _normalize_symbol(symbol: str) -> str:
+    key = (symbol or DEFAULT_SYMBOL).upper().replace("/", "")
+    if key not in SYMBOLS:
+        raise ValueError(f"Unsupported symbol '{symbol}'. Allowed: {', '.join(SYMBOLS.keys())}")
+    return key
+
+
+def _model_paths(symbol: str):
+    s = _normalize_symbol(symbol)
+    cfg = SYMBOLS[s]
+    return MODEL_DIR / cfg["model_file"], MODEL_DIR / cfg["meta_file"]
 
 
 def _walk_forward_splits(n_samples: int, n_splits: int, test_size: int):
@@ -60,7 +69,7 @@ def _compute_metrics(y_true, y_pred, y_prob) -> dict:
     }
 
 
-def train_model(dataset: pd.DataFrame) -> dict:
+def train_model(dataset: pd.DataFrame, symbol: str = DEFAULT_SYMBOL) -> dict:
     """
     Train XGBoost with walk-forward validation.
 
@@ -71,6 +80,8 @@ def train_model(dataset: pd.DataFrame) -> dict:
     Returns:
         dict with training metrics and fold results
     """
+    symbol = _normalize_symbol(symbol)
+    model_file, meta_file = _model_paths(symbol)
     t0 = time.time()
 
     # Separate features and target
@@ -173,8 +184,8 @@ def train_model(dataset: pd.DataFrame) -> dict:
     final_metrics = _compute_metrics(y[final_eval_idx], y_pred_final, y_prob_final)
 
     # Save model
-    final_booster.save_model(str(MODEL_FILE))
-    logger.info("Model saved to %s", MODEL_FILE)
+    final_booster.save_model(str(model_file))
+    logger.info("Model saved to %s", model_file)
 
     # Average CV metrics
     avg_metrics = {
@@ -193,6 +204,7 @@ def train_model(dataset: pd.DataFrame) -> dict:
 
     # Save meta
     meta = {
+        "symbol": symbol,
         "trained_at": datetime.utcnow().isoformat(),
         "training_time_sec": elapsed,
         "n_samples": n_samples,
@@ -209,9 +221,9 @@ def train_model(dataset: pd.DataFrame) -> dict:
         "top_features": top_features,
         "params": {k: v for k, v in params.items() if k != "nthread"},
     }
-    with open(META_FILE, "w") as f:
+    with open(meta_file, "w") as f:
         json.dump(meta, f, indent=2)
-    logger.info("Meta saved to %s", META_FILE)
+    logger.info("Meta saved to %s", meta_file)
 
     logger.info("Training complete in %.1fs", elapsed)
     logger.info("CV avg: acc=%.3f  auc=%.3f  f1=%.3f", avg_metrics["accuracy"], avg_metrics["auc_roc"], avg_metrics["f1"])

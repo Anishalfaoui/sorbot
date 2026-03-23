@@ -4,6 +4,7 @@ import { subscribe } from '../websocket';
 import PredictionCard from '../components/PredictionCard';
 
 export default function Dashboard({ mode, setMode }) {
+  const [selectedSymbol, setSelectedSymbol] = useState(localStorage.getItem('selectedSymbol') || 'BTCUSD');
   const [prediction, setPrediction] = useState(null);
   const [stats, setStats] = useState({ totalTrades: 0, wins: 0, losses: 0, winRate: 0, totalPnl: 0 });
   const [loading, setLoading] = useState(true);
@@ -47,12 +48,17 @@ export default function Dashboard({ mode, setMode }) {
   const handleFetch = async () => {
     setFetching(true);
     try {
-      const res = await fetchPrediction();
+      const res = await fetchPrediction(selectedSymbol);
       if (res.data && res.data.id) setPrediction(res.data);
     } catch (e) {
       console.error('Fetch failed:', e);
     }
     setFetching(false);
+  };
+
+  const handleSymbolChange = (symbol) => {
+    setSelectedSymbol(symbol);
+    localStorage.setItem('selectedSymbol', symbol);
   };
 
   const handleAccept = async (id) => {
@@ -100,7 +106,25 @@ export default function Dashboard({ mode, setMode }) {
       {/* Top bar */}
       <div className="top-bar">
         <h2>Dashboard</h2>
-        <div className="mode-toggle">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <select
+            value={selectedSymbol}
+            onChange={(e) => handleSymbolChange(e.target.value)}
+            style={{
+              background: 'var(--panel-2)',
+              border: '1px solid var(--border)',
+              color: 'var(--text-primary)',
+              borderRadius: 8,
+              padding: '8px 10px',
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            <option value="BTCUSD">BTC/USD</option>
+            <option value="EURUSD">EUR/USD</option>
+            <option value="XAUUSD">XAU/USD</option>
+          </select>
+          <div className="mode-toggle">
           <button
             className={`mode-btn ${mode === 'MANUAL' ? 'active' : ''}`}
             onClick={() => handleModeChange('MANUAL')}
@@ -113,6 +137,7 @@ export default function Dashboard({ mode, setMode }) {
           >
             🤖 Auto
           </button>
+          </div>
         </div>
       </div>
 

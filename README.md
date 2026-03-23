@@ -573,9 +573,8 @@ Renders a single prediction with:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `BINANCE_API_KEY` | Yes | Binance API key for trading |
-| `BINANCE_API_SECRET` | Yes | Binance API secret |
-| `BINANCE_TESTNET` | No | Set `true` for testnet (default: `false`) |
+| `DEFAULT_SYMBOL` | No | Default symbol for AI endpoints (`BTCUSD`, `EURUSD`, `XAUUSD`) |
+| `VIRTUAL_ACCOUNT_INITIAL_BALANCE` | No | Virtual account starting balance per user (default: `10000`) |
 | `API_HOST` | No | AI engine host (default: `0.0.0.0`) |
 | `API_PORT` | No | AI engine port (default: `8000`) |
 | `AI_ENGINE_URL` | No | Backend → AI engine URL (default: `http://localhost:8000`) |
@@ -605,7 +604,6 @@ All feature engineering, model training, prediction, and risk management paramet
 
 ### Prerequisites
 - Docker & Docker Compose
-- Binance API key and secret (or testnet credentials)
 
 ### 1. Clone the repository
 
@@ -619,9 +617,8 @@ cd sorbot
 Create a `.env` file at the project root:
 
 ```env
-BINANCE_API_KEY=your_api_key_here
-BINANCE_API_SECRET=your_api_secret_here
-BINANCE_TESTNET=true
+DEFAULT_SYMBOL=BTCUSD
+VIRTUAL_ACCOUNT_INITIAL_BALANCE=10000
 ```
 
 ### 3. Start all services

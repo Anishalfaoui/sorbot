@@ -27,6 +27,15 @@ function getStatusClass(status) {
   return 'status-closed';
 }
 
+function formatSymbol(symbol) {
+  if (!symbol) return '—';
+  const s = String(symbol).toUpperCase().replace(/[-/\s]/g, '');
+  if (s === 'BTCUSD' || s === 'BTCUSDT') return 'BTC/USD';
+  if (s === 'EURUSD') return 'EUR/USD';
+  if (s === 'XAUUSD') return 'XAU/USD';
+  return symbol;
+}
+
 export default function PredictionCard({ prediction, mode, onAccept, onReject, actionLoading, compact }) {
   const p = prediction;
   const signalClass = getSignalClass(p.signal);
@@ -38,7 +47,7 @@ export default function PredictionCard({ prediction, mode, onAccept, onReject, a
       {/* Header */}
       <div className="prediction-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <h3>{p.symbol || 'BTC-USD'}</h3>
+          <h3>{formatSymbol(p.symbol)}</h3>
           <span className={`signal-badge ${signalClass}`}>
             {p.signal === 'LONG' ? '▲' : p.signal === 'SHORT' ? '▼' : '⏸'}
             {' '}{p.signal || 'NO_TRADE'}

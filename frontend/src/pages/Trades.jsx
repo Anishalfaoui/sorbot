@@ -13,6 +13,14 @@ function formatPrice(price) {
   return Number(price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function formatSymbol(symbol) {
+  const s = String(symbol || '').toUpperCase().replace(/[-/\s]/g, '');
+  if (s === 'BTCUSD' || s === 'BTCUSDT') return 'BTC/USD';
+  if (s === 'EURUSD') return 'EUR/USD';
+  if (s === 'XAUUSD') return 'XAU/USD';
+  return symbol || '—';
+}
+
 export default function Trades() {
   const [trades, setTrades] = useState([]);
   const [stats, setStats] = useState({});
@@ -117,6 +125,7 @@ export default function Trades() {
               <thead>
                 <tr>
                   <th>Date</th>
+                  <th>Symbol</th>
                   <th>Side</th>
                   <th>Entry</th>
                   <th>SL</th>
@@ -132,6 +141,7 @@ export default function Trades() {
                 {trades.map((trade) => (
                   <tr key={trade.id}>
                     <td>{formatDate(trade.executedAt)}</td>
+                    <td>{formatSymbol(trade.symbol)}</td>
                     <td className={trade.side === 'LONG' ? 'td-green' : 'td-red'}>
                       {trade.side === 'LONG' ? '▲' : '▼'} {trade.side}
                     </td>

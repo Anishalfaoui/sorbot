@@ -4,6 +4,7 @@ import { subscribe } from '../websocket';
 import PredictionCard from '../components/PredictionCard';
 
 export default function Predictions({ mode }) {
+  const [selectedSymbol, setSelectedSymbol] = useState(localStorage.getItem('selectedSymbol') || 'BTCUSD');
   const [predictions, setPredictions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
@@ -30,7 +31,7 @@ export default function Predictions({ mode }) {
   const handleFetch = async () => {
     setFetching(true);
     try {
-      await fetchPrediction();
+      await fetchPrediction(selectedSymbol);
       await loadPredictions();
     } catch (e) {
       console.error('Fetch failed:', e);
@@ -73,9 +74,32 @@ export default function Predictions({ mode }) {
     <div>
       <div className="top-bar">
         <h2>Predictions History</h2>
-        <button className="btn btn-primary" onClick={handleFetch} disabled={fetching}>
-          {fetching ? <span className="spinner" /> : '🔄'} Fetch New
-        </button>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <select
+            value={selectedSymbol}
+            onChange={(e) => {
+              const v = e.target.value;
+              setSelectedSymbol(v);
+              localStorage.setItem('selectedSymbol', v);
+            }}
+            style={{
+              background: 'var(--panel-2)',
+              border: '1px solid var(--border)',
+              color: 'var(--text-primary)',
+              borderRadius: 8,
+              padding: '8px 10px',
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            <option value="BTCUSD">BTC/USD</option>
+            <option value="EURUSD">EUR/USD</option>
+            <option value="XAUUSD">XAU/USD</option>
+          </select>
+          <button className="btn btn-primary" onClick={handleFetch} disabled={fetching}>
+            {fetching ? <span className="spinner" /> : '🔄'} Fetch New
+          </button>
+        </div>
       </div>
 
       {predictions.length === 0 ? (

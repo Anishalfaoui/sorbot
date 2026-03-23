@@ -29,8 +29,17 @@ public class SettingsController {
      * Body: { "mode": "AUTO" } or { "mode": "MANUAL" }
      */
     @PutMapping("/mode")
-    public TradingSettings updateMode(@RequestBody Map<String, String> body) {
-        String mode = body.getOrDefault("mode", "MANUAL");
-        return tradingService.updateMode(mode);
+    public TradingSettings updateMode(
+            @RequestBody(required = false) Map<String, String> body,
+            @RequestParam(required = false) String mode
+    ) {
+        String resolvedMode = mode;
+        if ((resolvedMode == null || resolvedMode.isBlank()) && body != null) {
+            resolvedMode = body.get("mode");
+        }
+        if (resolvedMode == null || resolvedMode.isBlank()) {
+            resolvedMode = "MANUAL";
+        }
+        return tradingService.updateMode(resolvedMode);
     }
 }

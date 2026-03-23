@@ -3,6 +3,7 @@ node_modules/
 
 # Build output
 dist/
+coverage/
 
 # Environment
 .env
@@ -24,4 +25,6 @@ Thumbs.db
 
 # Cache
 .cache/
+.vite/
+.eslintcache
 *.tsbuildinfo

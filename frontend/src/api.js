@@ -40,7 +40,7 @@ export const register = (data) => api.post('/auth/register', data);
 export const getMe = () => api.get('/auth/me');
 
 // ── Predictions ──
-export const fetchPrediction = () => api.post('/predictions/fetch');
+export const fetchPrediction = (symbol = 'BTCUSD') => api.post('/predictions/fetch', null, { params: { symbol } });
 export const getPredictions = () => api.get('/predictions');
 export const getLatestPrediction = () => api.get('/predictions/latest');
 export const acceptPrediction = (id) => api.post(`/predictions/${id}/accept`);
@@ -58,7 +58,7 @@ export const setMode = (mode) => api.put('/settings/mode', null, { params: { mod
 
 // ── Dashboard / Misc ──
 export const getDashboard = () => api.get('/dashboard');
-export const getAccountStatus = () => api.get('/account');
+export const getAccountStatus = (symbol = 'BTCUSD') => api.get('/account', { params: { symbol } });
 export const getModelInfo = () => api.get('/model');
 export const trainModel = () => api.post('/train');
 export const healthCheck = () => api.get('/health');

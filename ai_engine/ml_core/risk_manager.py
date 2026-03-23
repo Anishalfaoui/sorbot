@@ -1,12 +1,7 @@
 """
 Sorbot AI Engine v3.0 — Risk Manager
-=======================================
-Position sizing and risk controls for $500 spot account:
-  - ATR-based position sizing
-  - Risk per trade = 1.5% of equity ($7.50)
-  - No leverage (spot only)
-  - Max 1 open position
-  - Pre-trade validation
+====================================
+Position sizing and risk controls for virtual paper accounts.
 """
 
 import logging
@@ -32,9 +27,7 @@ class RiskManager:
         self.balance = new_balance
         logger.info("Balance updated: $%.2f", self.balance)
 
-    # Binance BTCUSDT spot minimum notional is $10.
-    # We require $12 to cover the order + trading fees + rounding.
-    BINANCE_MIN_NOTIONAL = 12.0
+    MIN_NOTIONAL = 1.0
 
     def can_trade(self) -> tuple:
         """Check if we can open a new trade. Returns (allowed, reason)."""
@@ -42,12 +35,10 @@ class RiskManager:
             return False, f"Max positions reached ({MAX_POSITIONS})"
         if self.balance <= 0:
             return False, "Zero balance"
-        if self.balance < self.BINANCE_MIN_NOTIONAL:
+        if self.balance < self.MIN_NOTIONAL:
             return False, (
                 f"Insufficient balance: ${self.balance:.2f}. "
-                f"Binance spot requires at least ${self.BINANCE_MIN_NOTIONAL:.0f} USDT "
-                f"(minimum notional $10 + fees buffer). "
-                f"Please deposit more USDT to continue trading."
+                f"Minimum virtual balance required is ${self.MIN_NOTIONAL:.0f}."
             )
         return True, "OK"
 
@@ -106,13 +97,13 @@ class RiskManager:
         if qty_btc <= 0:
             qty_btc = 0.00001  # minimum
 
-        # Minimum notional check (Binance requires > $10 for BTCUSDT)
-        if notional < self.BINANCE_MIN_NOTIONAL:
+        # Minimum notional check
+        if notional < self.MIN_NOTIONAL:
             return {
                 "qty_btc": 0,
                 "error": (
-                    f"Order notional ${notional:.2f} below Binance minimum "
-                    f"(${self.BINANCE_MIN_NOTIONAL:.0f}). Need more USDT."
+                    f"Order notional ${notional:.2f} below minimum "
+                    f"(${self.MIN_NOTIONAL:.0f})."
                 ),
             }
 

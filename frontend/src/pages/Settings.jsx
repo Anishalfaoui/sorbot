@@ -193,8 +193,8 @@ export default function Settings({ mode, setMode }) {
         <h3>ℹ️ About</h3>
         <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.8 }}>
           <p><strong>Sorbot AI Trading Engine v3.0</strong></p>
-          <p>BTC/USD trading with XGBoost ML model, 122 features, multi-timeframe analysis.</p>
-          <p>Architecture: React → Spring Boot → Python AI Engine → Binance Futures</p>
+          <p>Multi-symbol virtual trading with XGBoost ML model and multi-timeframe analysis (BTC/USD, EUR/USD, XAU/USD).</p>
+          <p>Architecture: React → Spring Boot → Python AI Engine → Virtual Paper Account</p>
         </div>
       </div>
     </div>
