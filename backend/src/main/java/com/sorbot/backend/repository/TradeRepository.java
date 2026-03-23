@@ -7,6 +7,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface TradeRepository extends JpaRepository<Trade, Long> {
@@ -16,6 +17,7 @@ public interface TradeRepository extends JpaRepository<Trade, Long> {
     List<Trade> findByUserIdAndStatusOrderByExecutedAtDesc(Long userId, String status);
 
     Trade findFirstByUserIdAndStatusOrderByExecutedAtDesc(Long userId, String status);
+    Optional<Trade> findByIdAndUserId(Long id, Long userId);
 
     @Query("SELECT COUNT(t) FROM Trade t WHERE t.status = 'CLOSED' AND t.pnl > 0")
     long countWins();

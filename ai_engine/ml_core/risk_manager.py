@@ -17,7 +17,7 @@ logger = logging.getLogger("sorbot.risk")
 
 
 class RiskManager:
-    """Manages position sizing and risk controls (spot, no leverage)."""
+    """Manages position sizing and risk controls for virtual paper trading."""
 
     def __init__(self, balance: float = ACCOUNT_BALANCE):
         self.balance = balance
@@ -50,25 +50,24 @@ class RiskManager:
     ) -> dict:
         """
         Calculate position size based on risk management rules.
-        Spot trading: no leverage, BUY only.
 
         Args:
             entry_price: expected entry price
             sl_price: stop loss price
-            signal: "LONG" only (SHORT not supported in spot)
+            signal: "LONG" or "SHORT"
 
         Returns:
             dict with qty, notional, risk_usd, etc.
         """
-        if signal == "SHORT":
-            return {"qty_btc": 0, "error": "SHORT not supported in spot trading"}
+        if signal not in ("LONG", "SHORT"):
+            return {"qty_btc": 0, "error": f"Unsupported signal '{signal}'"}
 
         # Risk amount in USD
         risk_pct = min(RISK_PER_TRADE, MAX_RISK_PER_TRADE)
         risk_usd = self.balance * risk_pct
 
         # Distance to SL (absolute)
-        sl_distance = entry_price - sl_price
+        sl_distance = abs(entry_price - sl_price)
 
         if sl_distance <= 0:
             logger.warning("Invalid SL distance: %.2f", sl_distance)

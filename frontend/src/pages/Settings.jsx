@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getSettings, setMode as apiSetMode, trainModel, getModelInfo, healthCheck } from '../api';
+import { getSettings, setMode as apiSetMode, trainModel, getModelInfoAll, healthCheck } from '../api';
 
 export default function Settings({ mode, setMode }) {
   const [settings, setSettings] = useState(null);
@@ -16,7 +16,7 @@ export default function Settings({ mode, setMode }) {
     try {
       const [settingsRes, modelRes, healthRes] = await Promise.all([
         getSettings().catch(() => ({ data: null })),
-        getModelInfo().catch(() => ({ data: null })),
+        getModelInfoAll().catch(() => ({ data: null })),
         healthCheck().catch(() => ({ data: null })),
       ]);
       if (settingsRes.data) setSettings(settingsRes.data);
@@ -44,7 +44,7 @@ export default function Settings({ mode, setMode }) {
       const res = await trainModel();
       setTrainResult(res.data);
       // Reload model info
-      const modelRes = await getModelInfo();
+      const modelRes = await getModelInfoAll();
       setModelInfo(modelRes.data);
     } catch (e) {
       setTrainResult({ error: e.message });
@@ -90,48 +90,43 @@ export default function Settings({ mode, setMode }) {
       {/* AI Model */}
       <div className="settings-section">
         <h3>🧠 AI Model</h3>
-        {modelInfo ? (
+        {modelInfo?.models ? (
           <>
-            <div className="prediction-grid">
-              {modelInfo.model_loaded != null && (
-                <div className="pred-item">
-                  <span className="pred-item-label">Status</span>
-                  <span className="pred-item-value" style={{ color: modelInfo.model_loaded ? 'var(--green)' : 'var(--red)' }}>
-                    {modelInfo.model_loaded ? '✅ Loaded' : '❌ Not Loaded'}
-                  </span>
+            {modelInfo.models.map((model) => {
+              const metrics = model.final_metrics || {};
+              return (
+                <div key={model.symbol} className="prediction-panel" style={{ marginBottom: 12 }}>
+                  <div className="prediction-header">
+                    <h3>{model.symbol_label || model.symbol}</h3>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                      {model.trained_at ? new Date(model.trained_at).toLocaleString() : 'No training date'}
+                    </span>
+                  </div>
+                  {model.error ? (
+                    <div style={{ color: 'var(--red)', fontSize: 13 }}>❌ {model.error}</div>
+                  ) : (
+                    <div className="prediction-grid">
+                      <div className="pred-item">
+                        <span className="pred-item-label">Accuracy</span>
+                        <span className="pred-item-value">{((metrics.accuracy || 0) * 100).toFixed(1)}%</span>
+                      </div>
+                      <div className="pred-item">
+                        <span className="pred-item-label">AUC</span>
+                        <span className="pred-item-value">{(metrics.auc_roc || 0).toFixed(3)}</span>
+                      </div>
+                      <div className="pred-item">
+                        <span className="pred-item-label">F1</span>
+                        <span className="pred-item-value">{(metrics.f1 || 0).toFixed(3)}</span>
+                      </div>
+                      <div className="pred-item">
+                        <span className="pred-item-label">Features</span>
+                        <span className="pred-item-value">{model.n_features || 0}</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
-              {modelInfo.accuracy && (
-                <div className="pred-item">
-                  <span className="pred-item-label">Accuracy</span>
-                  <span className="pred-item-value">{(modelInfo.accuracy * 100).toFixed(1)}%</span>
-                </div>
-              )}
-              {modelInfo.auc && (
-                <div className="pred-item">
-                  <span className="pred-item-label">AUC</span>
-                  <span className="pred-item-value">{modelInfo.auc.toFixed(3)}</span>
-                </div>
-              )}
-              {modelInfo.f1 && (
-                <div className="pred-item">
-                  <span className="pred-item-label">F1 Score</span>
-                  <span className="pred-item-value">{modelInfo.f1.toFixed(3)}</span>
-                </div>
-              )}
-              {modelInfo.n_features && (
-                <div className="pred-item">
-                  <span className="pred-item-label">Features</span>
-                  <span className="pred-item-value">{modelInfo.n_features}</span>
-                </div>
-              )}
-              {modelInfo.train_rows && (
-                <div className="pred-item">
-                  <span className="pred-item-label">Training Rows</span>
-                  <span className="pred-item-value">{modelInfo.train_rows.toLocaleString()}</span>
-                </div>
-              )}
-            </div>
+              );
+            })}
 
             <div style={{ marginTop: 16 }}>
               <button className="btn btn-primary" onClick={handleTrain} disabled={training}>
@@ -140,7 +135,7 @@ export default function Settings({ mode, setMode }) {
                     <span className="spinner" /> Training...
                   </>
                 ) : (
-                  '🔄 Retrain Model'
+                  '🔄 Retrain All Models'
                 )}
               </button>
             </div>
@@ -150,10 +145,16 @@ export default function Settings({ mode, setMode }) {
                 {trainResult.error ? (
                   <span style={{ color: 'var(--red)' }}>❌ {trainResult.error}</span>
                 ) : (
-                  <span style={{ color: 'var(--green)' }}>
-                    ✅ Model retrained! Accuracy: {((trainResult.accuracy || 0) * 100).toFixed(1)}%,
-                    AUC: {(trainResult.auc || 0).toFixed(3)}
-                  </span>
+                  <div>
+                    <div style={{ color: trainResult.failed > 0 ? 'var(--yellow)' : 'var(--green)', marginBottom: 8 }}>
+                      ✅ Retrain finished: {trainResult.trained || 0} trained, {trainResult.failed || 0} failed.
+                    </div>
+                    {Array.isArray(trainResult.results) && trainResult.results.map((r) => (
+                      <div key={r.symbol} style={{ fontSize: 12, color: r.status === 'trained' ? 'var(--green)' : 'var(--red)' }}>
+                        {r.symbol}: {r.status === 'trained' ? `trained at ${new Date(r.trained_at).toLocaleString()}` : r.error}
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             )}

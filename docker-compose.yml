@@ -18,8 +18,8 @@ services:
       - API_HOST=0.0.0.0
       - API_PORT=8000
     volumes:
-      - ai-data:/app/data
-      - ai-models:/app/models
+      - ./ai_engine/data:/app/data
+      - ./ai_engine/models:/app/models
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
@@ -61,6 +61,3 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-volumes:
-  ai-data:
-  ai-models:

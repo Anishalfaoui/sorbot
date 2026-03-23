@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getTrades, getTradeStats, closePosition } from '../api';
+import { getTrades, getOpenTrades, getTradeStats, closePosition, closeTradePosition } from '../api';
 import { subscribe } from '../websocket';
 
 function formatDate(dateStr) {
@@ -23,17 +23,21 @@ function formatSymbol(symbol) {
 
 export default function Trades() {
   const [trades, setTrades] = useState([]);
+  const [openTrades, setOpenTrades] = useState([]);
   const [stats, setStats] = useState({});
   const [loading, setLoading] = useState(true);
   const [closing, setClosing] = useState(false);
+  const [closingTradeId, setClosingTradeId] = useState(null);
 
   const loadData = async () => {
     try {
-      const [tradesRes, statsRes] = await Promise.all([
+      const [tradesRes, openTradesRes, statsRes] = await Promise.all([
         getTrades(),
+        getOpenTrades(),
         getTradeStats(),
       ]);
       setTrades(tradesRes.data || []);
+      setOpenTrades(openTradesRes.data || []);
       setStats(statsRes.data || {});
     } catch (e) {
       console.error('Failed to load trades:', e);
@@ -63,6 +67,17 @@ export default function Trades() {
     setClosing(false);
   };
 
+  const handleCloseTrade = async (tradeId) => {
+    setClosingTradeId(tradeId);
+    try {
+      await closeTradePosition(tradeId);
+      await loadData();
+    } catch (e) {
+      console.error('Close trade failed:', e);
+    }
+    setClosingTradeId(null);
+  };
+
   if (loading) {
     return (
       <div className="loading-screen">
@@ -79,6 +94,79 @@ export default function Trades() {
         <button className="btn btn-secondary" onClick={handleClose} disabled={closing}>
           {closing ? <span className="spinner" /> : '🔒'} Close Position
         </button>
+      </div>
+
+      <div className="trades-hero">
+        <div className="trades-hero-balance">
+          <span className="label">Account Balance</span>
+          <strong>${formatPrice(stats.virtualBalance ?? 0)}</strong>
+        </div>
+        <div className="trades-hero-meta">
+          <span className="chip">Open: {openTrades.length}</span>
+          <span className="chip">Closed: {Math.max((stats.totalTrades || 0), 0)}</span>
+          <span className={`chip ${(stats.totalPnl || 0) >= 0 ? 'chip-green' : 'chip-red'}`}>
+            Net PnL: {(stats.totalPnl || 0) >= 0 ? '+' : ''}${formatPrice(stats.totalPnl || 0)}
+          </span>
+        </div>
+      </div>
+
+      <div className="table-container" style={{ marginBottom: 18 }}>
+        <div className="table-header">
+          <h3>Open Positions</h3>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{openTrades.length} active</span>
+        </div>
+
+        {openTrades.length === 0 ? (
+          <div className="empty-state" style={{ padding: '18px 16px' }}>
+            <div className="empty-state-icon">🟢</div>
+            <p>No open positions right now.</p>
+          </div>
+        ) : (
+          <div className="open-trades-grid">
+            {openTrades.map((trade) => (
+              <div key={trade.id} className="open-trade-card">
+                <div className="open-trade-header">
+                  <div>
+                    <div className="open-trade-symbol">{formatSymbol(trade.symbol)}</div>
+                    <div className="open-trade-time">Opened {formatDate(trade.executedAt)}</div>
+                  </div>
+                  <span className={`signal-badge ${trade.side === 'LONG' ? 'long' : 'short'}`}>
+                    {trade.side === 'LONG' ? '▲ LONG' : '▼ SHORT'}
+                  </span>
+                </div>
+
+                <div className="prediction-grid" style={{ marginBottom: 12 }}>
+                  <div className="pred-item">
+                    <span className="pred-item-label">Entry</span>
+                    <span className="pred-item-value">${formatPrice(trade.entryPrice)}</span>
+                  </div>
+                  <div className="pred-item">
+                    <span className="pred-item-label">Stop Loss</span>
+                    <span className="pred-item-value" style={{ color: 'var(--red)' }}>${formatPrice(trade.slPrice)}</span>
+                  </div>
+                  <div className="pred-item">
+                    <span className="pred-item-label">Take Profit</span>
+                    <span className="pred-item-value" style={{ color: 'var(--green)' }}>${formatPrice(trade.tpPrice)}</span>
+                  </div>
+                  <div className="pred-item">
+                    <span className="pred-item-label">Quantity</span>
+                    <span className="pred-item-value">{trade.quantity ? trade.quantity.toFixed(6) : '—'}</span>
+                  </div>
+                </div>
+
+                <div className="open-trade-actions">
+                  <button
+                    className="btn btn-reject"
+                    onClick={() => handleCloseTrade(trade.id)}
+                    disabled={closingTradeId === trade.id}
+                  >
+                    {closingTradeId === trade.id ? <span className="spinner" /> : '🧾'} Close Position
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Stats */}

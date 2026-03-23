@@ -146,21 +146,22 @@ class Predictor:
         atr_pct = atr_val / current_price
 
         # Signal determination
-        signal = "NO_TRADE"
+        # Always output a direction (LONG/SHORT); lower confidence is surfaced as a warning.
+        signal = "LONG" if prob_up >= 0.5 else "SHORT"
         reject_reason = None
-        sl_price = None
-        tp_price = None
 
-        if prob_up >= CONFIDENCE_LONG:
-            signal = "LONG"
+        if signal == "LONG":
             sl_price = round(current_price - SL_ATR_MULT * atr_val, 2)
             tp_price = round(current_price + TP_ATR_MULT * atr_val, 2)
-        elif prob_up <= CONFIDENCE_SHORT:
-            signal = "SHORT"
+        else:
             sl_price = round(current_price + SL_ATR_MULT * atr_val, 2)
             tp_price = round(current_price - TP_ATR_MULT * atr_val, 2)
-        else:
-            reject_reason = f"Confidence {prob_up:.1%} in uncertain zone ({CONFIDENCE_SHORT:.0%}-{CONFIDENCE_LONG:.0%})"
+
+        if CONFIDENCE_SHORT < prob_up < CONFIDENCE_LONG:
+            reject_reason = (
+                f"Low-confidence directional call ({prob_up:.1%}); "
+                f"outside strong-confidence zone ({CONFIDENCE_SHORT:.0%}-{CONFIDENCE_LONG:.0%})."
+            )
 
         # R:R check
         if signal in ("LONG", "SHORT") and sl_price and tp_price:
@@ -168,10 +169,8 @@ class Predictor:
             reward = abs(tp_price - current_price)
             rr = reward / risk if risk > 0 else 0
             if rr < MIN_RR_RATIO:
-                reject_reason = f"R:R ratio {rr:.2f} below minimum {MIN_RR_RATIO}"
-                signal = "NO_TRADE"
-                sl_price = None
-                tp_price = None
+                rr_warning = f"R:R ratio {rr:.2f} below preferred minimum {MIN_RR_RATIO}."
+                reject_reason = f"{reject_reason} {rr_warning}".strip() if reject_reason else rr_warning
 
         # ── Market Analysis ──────────────────────
         try:
@@ -211,34 +210,33 @@ class Predictor:
             "atr_pct": round(atr_pct * 100, 3),
         }
 
-        if signal in ("LONG", "SHORT"):
-            result["sl_price"] = sl_price
-            result["tp_price"] = tp_price
-            risk = abs(current_price - sl_price)
-            reward = abs(tp_price - current_price)
-            result["risk_reward"] = round(reward / risk, 2) if risk > 0 else 0
-            result["risk_usd"] = round(risk, 2)
-            result["reward_usd"] = round(reward, 2)
+        result["sl_price"] = sl_price
+        result["tp_price"] = tp_price
+        risk = abs(current_price - sl_price)
+        reward = abs(tp_price - current_price)
+        result["risk_reward"] = round(reward / risk, 2) if risk > 0 else 0
+        result["risk_usd"] = round(risk, 2)
+        result["reward_usd"] = round(reward, 2)
 
-            # Add estimated position sizing so user sees capital usage BEFORE accepting
-            try:
-                from ml_core.risk_manager import RiskManager
-                _rm = RiskManager(balance=max(float(virtual_balance or 0), 0.0))
-                sizing_est = _rm.calculate_position_size(
-                    entry_price=current_price,
-                    sl_price=sl_price,
-                    signal=signal,
-                )
-                if not sizing_est.get("error"):
-                    result["est_qty_btc"] = sizing_est["qty_btc"]
-                    result["est_notional_usd"] = sizing_est["notional_usd"]
-                    result["est_risk_usd"] = sizing_est["risk_usd"]
-                    result["est_capital_used_pct"] = sizing_est["capital_used_pct"]
-                    result["est_balance"] = sizing_est["balance"]
-                else:
-                    result["sizing_warning"] = sizing_est["error"]
-            except Exception as e:
-                logger.warning("Could not estimate position size: %s", e)
+        # Add estimated position sizing so user sees capital usage BEFORE accepting
+        try:
+            from ml_core.risk_manager import RiskManager
+            _rm = RiskManager(balance=max(float(virtual_balance or 0), 0.0))
+            sizing_est = _rm.calculate_position_size(
+                entry_price=current_price,
+                sl_price=sl_price,
+                signal=signal,
+            )
+            if not sizing_est.get("error"):
+                result["est_qty_btc"] = sizing_est["qty_btc"]
+                result["est_notional_usd"] = sizing_est["notional_usd"]
+                result["est_risk_usd"] = sizing_est["risk_usd"]
+                result["est_capital_used_pct"] = sizing_est["capital_used_pct"]
+                result["est_balance"] = sizing_est["balance"]
+            else:
+                result["sizing_warning"] = sizing_est["error"]
+        except Exception as e:
+            logger.warning("Could not estimate position size: %s", e)
 
         if reject_reason:
             result["reject_reason"] = reject_reason
@@ -476,15 +474,19 @@ def _build_conclusion(
                       f"the next few hours. ATR volatility is ${atr_val:.2f} ({atr_val/current_price*100:.2f}%). "
                       f"Trade with proper risk management - risk only what you can afford to lose.")
     elif signal == "SHORT":
-        # In spot mode, SHORT means "sell existing BTC" or "stay out"
-        lines.append(f"DECISION: SELL / STAY OUT (Bearish)")
-        lines.append(f"  Current Price: ${current_price:,.2f}")
+        risk = abs(current_price - sl_price)
+        reward = abs(tp_price - current_price)
+        rr = reward / risk if risk > 0 else 0
+        lines.append(f"DECISION: SHORT (SELL)")
+        lines.append(f"  Entry: ${current_price:,.2f}")
+        lines.append(f"  Stop Loss: ${sl_price:,.2f} ({SL_ATR_MULT}x ATR = -${risk:,.2f})")
+        lines.append(f"  Take Profit: ${tp_price:,.2f} ({TP_ATR_MULT}x ATR = +${reward:,.2f})")
+        lines.append(f"  Risk:Reward = 1:{rr:.1f}")
         lines.append("")
-        lines.append(f"The AI model sees a BEARISH outlook with {1-prob_up:.1%} probability of downward movement. "
-                      f"Spot trading is BUY-only, so no short position will be opened. "
-                      f"If you hold BTC, consider selling. Otherwise, wait for a bullish setup. "
+        lines.append(f"The AI model sees a BEARISH opportunity with {1-prob_up:.1%} probability of downward movement. "
+                      f"A virtual short trade can be opened in the paper account environment. "
                       f"ATR volatility is ${atr_val:.2f} ({atr_val/current_price*100:.2f}%). "
-                      f"Patience preserves capital.")
+                      f"Follow risk limits and position sizing discipline.")
 
     lines.append("")
     lines.append("--- This is an AI-generated analysis. Not financial advice. Trade at your own risk. ---")

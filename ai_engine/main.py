@@ -6,6 +6,7 @@ Execution endpoints are virtual/paper-only (no live exchange keys required).
 """
 
 import logging
+import math
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -29,6 +30,67 @@ logger = logging.getLogger("sorbot.api")
 
 predictor = Predictor()
 retrain_scheduler = RetrainingScheduler(predictor)
+
+
+def _sanitize_for_json(value):
+    if isinstance(value, dict):
+        return {k: _sanitize_for_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_for_json(v) for v in value]
+    if isinstance(value, tuple):
+        return [_sanitize_for_json(v) for v in value]
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return value
+
+
+def _heuristic_prediction(sym: str, ohlcv_1h) -> dict:
+    close = ohlcv_1h["Close"]
+    high = ohlcv_1h["High"]
+    low = ohlcv_1h["Low"]
+
+    current_price = float(close.iloc[-1])
+
+    if len(close) >= 2 and float(close.iloc[-2]) > 0:
+        momentum = (current_price - float(close.iloc[-2])) / float(close.iloc[-2])
+    else:
+        momentum = 0.0
+
+    signal = "LONG" if momentum >= 0 else "SHORT"
+    prob_up = min(max(0.5 + momentum * 25, 0.05), 0.95)
+    if signal == "SHORT":
+        prob_up = 1 - prob_up
+
+    tr = (high - low).tail(14)
+    atr = float(tr.mean()) if not tr.empty else current_price * 0.005
+    atr = atr if atr > 0 else current_price * 0.005
+
+    if signal == "LONG":
+        sl_price = round(current_price - 1.5 * atr, 2)
+        tp_price = round(current_price + 3.0 * atr, 2)
+    else:
+        sl_price = round(current_price + 1.5 * atr, 2)
+        tp_price = round(current_price - 3.0 * atr, 2)
+
+    risk = abs(current_price - sl_price)
+    reward = abs(tp_price - current_price)
+
+    return {
+        "timestamp": "fallback",
+        "symbol": sym,
+        "signal": signal,
+        "probability_up": round(prob_up, 4),
+        "probability_down": round(1 - prob_up, 4),
+        "confidence_pct": round(max(prob_up, 1 - prob_up) * 100, 1),
+        "current_price": current_price,
+        "atr": round(atr, 2),
+        "atr_pct": round((atr / max(current_price, 1e-9)) * 100, 3),
+        "sl_price": sl_price,
+        "tp_price": tp_price,
+        "risk_reward": round(reward / risk, 2) if risk > 0 else 2.0,
+        "reject_reason": "Heuristic fallback used because model data was unavailable.",
+        "conclusion": "Fallback prediction generated to keep signals available.",
+    }
 
 
 def _normalize_symbol(symbol: Optional[str]) -> str:
@@ -114,6 +176,7 @@ async def train(symbol: str = Query(default=DEFAULT_SYMBOL)):
             "status": "trained",
             "symbol": sym,
             "symbol_label": SYMBOLS[sym]["label"],
+            "trained_at": meta.get("trained_at"),
             "samples": meta["n_samples"],
             "cv_metrics": meta["cv_metrics"],
             "final_metrics": meta["final_metrics"],
@@ -124,6 +187,42 @@ async def train(symbol: str = Query(default=DEFAULT_SYMBOL)):
         raise HTTPException(500, str(e))
 
 
+@app.post("/train-all")
+async def train_all():
+    results = []
+    for sym in SYMBOLS.keys():
+        try:
+            logger.info("Starting training for %s", sym)
+            data = fetch_all_timeframes(symbol=sym)
+            htf_data = {"4h": data.get("4h"), "1d": data.get("1d")}
+            dataset = build_dataset(data["1h"], include_target=True, htf_data=htf_data)
+            meta = train_model(dataset, symbol=sym)
+            predictor.load(sym)
+            results.append({
+                "symbol": sym,
+                "status": "trained",
+                "trained_at": meta.get("trained_at"),
+                "samples": meta.get("n_samples"),
+                "final_metrics": meta.get("final_metrics", {}),
+            })
+        except Exception as e:
+            logger.error("Training error for %s: %s", sym, e)
+            results.append({
+                "symbol": sym,
+                "status": "error",
+                "error": str(e),
+            })
+
+    ok = [r for r in results if r.get("status") == "trained"]
+    failed = [r for r in results if r.get("status") != "trained"]
+    return {
+        "status": "completed" if not failed else "partial",
+        "trained": len(ok),
+        "failed": len(failed),
+        "results": results,
+    }
+
+
 @app.get("/predict")
 async def predict(
     symbol: str = Query(default=DEFAULT_SYMBOL),
@@ -132,22 +231,43 @@ async def predict(
     sym = _normalize_symbol(symbol)
 
     try:
-        predictor.load(sym)
         data = fetch_all_timeframes(symbol=sym)
+
+        try:
+            predictor.load(sym)
+        except FileNotFoundError:
+            logger.warning("No model found for %s. Training on demand before prediction.", sym)
+            data_for_training = data
+            htf_for_training = {"4h": data_for_training.get("4h"), "1d": data_for_training.get("1d")}
+            dataset_for_training = build_dataset(
+                data_for_training["1h"],
+                include_target=True,
+                htf_data=htf_for_training,
+            )
+            train_model(dataset_for_training, symbol=sym)
+            predictor.load(sym)
+
         htf_data = {"4h": data.get("4h"), "1d": data.get("1d")}
         dataset = build_dataset(data["1h"], include_target=False, htf_data=htf_data)
+
+        if dataset.empty:
+            logger.warning("Empty feature dataset for %s, returning heuristic fallback.", sym)
+            return _heuristic_prediction(sym, data["1h"])
+
         result = predictor.predict_latest(
             dataset,
             data["1h"],
             symbol=sym,
             virtual_balance=virtual_balance,
         )
-        return result
-    except FileNotFoundError as e:
-        raise HTTPException(400, str(e))
+        return _sanitize_for_json(result)
     except Exception as e:
         logger.error("Prediction error: %s", e)
-        raise HTTPException(500, str(e))
+        try:
+            fallback_data = fetch_ohlcv(symbol=sym, timeframe="1h", force_refresh=True)
+            return _sanitize_for_json(_heuristic_prediction(sym, fallback_data))
+        except Exception as fallback_error:
+            raise HTTPException(500, f"Prediction failed and fallback failed: {fallback_error}")
 
 
 class ExecuteTradeRequest(BaseModel):
@@ -252,6 +372,25 @@ async def model_info(symbol: str = Query(default=DEFAULT_SYMBOL)):
         return info
     except Exception as e:
         raise HTTPException(400, str(e))
+
+
+@app.get("/model-info-all")
+async def model_info_all():
+    all_info = []
+    for sym in SYMBOLS.keys():
+        try:
+            predictor.load(sym)
+            info = predictor.get_model_info()
+            info["symbol"] = sym
+            info["symbol_label"] = SYMBOLS[sym]["label"]
+            all_info.append(info)
+        except Exception as e:
+            all_info.append({
+                "symbol": sym,
+                "symbol_label": SYMBOLS[sym]["label"],
+                "error": str(e),
+            })
+    return {"models": all_info}
 
 
 @app.get("/retrain-status")

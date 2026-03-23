@@ -46,6 +46,14 @@ public class DashboardController {
     }
 
     /**
+     * GET /api/model/all — Get AI model info for all symbols.
+     */
+    @GetMapping("/model/all")
+    public Map<String, Object> getModelInfoAll() {
+        return tradingService.getModelInfoAll();
+    }
+
+    /**
      * POST /api/train — Trigger model retraining.
      */
     @PostMapping("/train")

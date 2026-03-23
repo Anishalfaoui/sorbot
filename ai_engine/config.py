@@ -47,7 +47,7 @@ SYMBOLS = {
     },
     "XAUUSD": {
         "label": "XAU/USD",
-        "yfinance": "XAUUSD=X",
+        "yfinance": "GC=F",
         "decimals": 2,
         "model_file": "XAUUSD_xgb.json",
         "meta_file": "XAUUSD_meta.json",

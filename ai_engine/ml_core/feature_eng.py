@@ -555,16 +555,39 @@ def build_htf_features(
 
 def build_target(df: pd.DataFrame) -> pd.Series:
     """
-    Binary target: 1 = price goes UP by >= UP_THRESHOLD in next N candles
-                   0 = price goes DOWN by <= DOWN_THRESHOLD
+    Binary target: 1 = price goes UP by >= threshold in next N candles
+                   0 = price goes DOWN by <= threshold
                    NaN = flat (excluded from training)
+
+    Uses adaptive thresholds when the static thresholds produce too few labels
+    (common on lower-volatility instruments like FX).
     """
     close = df["Close"]
     future_ret = close.shift(-LOOKAHEAD_CANDLES) / close - 1
 
+    up_thr = float(UP_THRESHOLD)
+    down_thr = float(DOWN_THRESHOLD)
+
+    labeled_mask = (future_ret >= up_thr) | (future_ret <= down_thr)
+    labeled_ratio = labeled_mask.mean()
+
+    if labeled_ratio < 0.05:
+        abs_ret = future_ret.abs().dropna()
+        if not abs_ret.empty:
+            adaptive = float(abs_ret.quantile(0.60))
+            adaptive = max(adaptive, 0.0002)
+            up_thr = adaptive
+            down_thr = -adaptive
+            logger.info(
+                "Adaptive target threshold enabled: up>=%.5f down<=%.5f (labeled ratio %.2f%%)",
+                up_thr,
+                down_thr,
+                labeled_ratio * 100,
+            )
+
     target = pd.Series(np.nan, index=df.index, name="target")
-    target[future_ret >= UP_THRESHOLD] = 1.0
-    target[future_ret <= DOWN_THRESHOLD] = 0.0
+    target[future_ret >= up_thr] = 1.0
+    target[future_ret <= down_thr] = 0.0
     return target
 
 
@@ -593,12 +616,28 @@ def build_dataset(
     # Clean up
     features.replace([np.inf, -np.inf], np.nan, inplace=True)
 
+    target = None
+    if include_target and "target" in features.columns:
+        target = features["target"].copy()
+        features = features.drop(columns=["target"])
+
     # Fill HTF NaN (warm-up) with 0
     htf_cols = [c for c in features.columns if c.startswith("htf_")]
     if htf_cols:
         features[htf_cols] = features[htf_cols].fillna(0)
 
-    features.dropna(inplace=True)
+    # Some instruments (notably FX) can have sparse volume-derived columns.
+    # Keep the row history by imputing sparse feature gaps instead of dropping everything.
+    all_nan_cols = [c for c in features.columns if features[c].isna().all()]
+    if all_nan_cols:
+        logger.warning("Filling %d all-NaN feature columns with 0: %s", len(all_nan_cols), all_nan_cols[:8])
+        features[all_nan_cols] = 0.0
+
+    features = features.ffill().bfill().fillna(0)
+
+    if include_target and target is not None:
+        features["target"] = target
+        features.dropna(subset=["target"], inplace=True)
 
     n_feats = features.shape[1] - (1 if include_target else 0)
     logger.info("Dataset: %d rows x %d features", len(features), n_feats)

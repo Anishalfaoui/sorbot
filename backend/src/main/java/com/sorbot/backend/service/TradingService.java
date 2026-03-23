@@ -305,6 +305,24 @@ public class TradingService {
             return Map.of("action", "NO_POSITION", "message", "No open virtual position");
         }
 
+        return closePosition(open.getId());
+    }
+
+    public Map<String, Object> closePosition(Long tradeId) {
+        User user = getCurrentUser();
+
+        Trade open = tradeRepo.findByIdAndUserId(tradeId, user.getId())
+                .orElseThrow(() -> new RuntimeException("Trade not found for current user: " + tradeId));
+
+        if (!"OPEN".equalsIgnoreCase(open.getStatus())) {
+            return Map.of(
+                    "action", "NO_POSITION",
+                    "message", "Trade is not open",
+                    "tradeId", open.getId(),
+                    "status", open.getStatus()
+            );
+        }
+
         String symbol = normalizeSymbol(open.getSymbol());
         double currentPrice = aiEngineClient.getPrice(symbol);
         double pnl = calculatePnl(open, currentPrice);
@@ -338,6 +356,14 @@ public class TradingService {
     public Map<String, Object> getModelInfo() {
         try {
             return aiEngineClient.getModelInfo(DEFAULT_SYMBOL);
+        } catch (Exception e) {
+            return Map.of("error", e.getMessage());
+        }
+    }
+
+    public Map<String, Object> getModelInfoAll() {
+        try {
+            return aiEngineClient.getModelInfoAll();
         } catch (Exception e) {
             return Map.of("error", e.getMessage());
         }

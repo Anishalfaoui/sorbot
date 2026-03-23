@@ -1,23 +1,44 @@
 import { useState, useEffect, useCallback } from 'react';
-import { getLatestPrediction, getTradeStats, fetchPrediction, acceptPrediction, rejectPrediction, setMode as apiSetMode } from '../api';
+import {
+  getPredictions,
+  getTradeStats,
+  fetchPrediction,
+  fetchPredictionsForAllSymbols,
+  acceptPrediction,
+  rejectPrediction,
+  setMode as apiSetMode,
+} from '../api';
 import { subscribe } from '../websocket';
 import PredictionCard from '../components/PredictionCard';
 
 export default function Dashboard({ mode, setMode }) {
-  const [selectedSymbol, setSelectedSymbol] = useState(localStorage.getItem('selectedSymbol') || 'BTCUSD');
-  const [prediction, setPrediction] = useState(null);
+  const [selectedSymbol, setSelectedSymbol] = useState('ALL');
+  const [signalFilter, setSignalFilter] = useState('ALL');
+  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [predictions, setPredictions] = useState([]);
   const [stats, setStats] = useState({ totalTrades: 0, wins: 0, losses: 0, winRate: 0, totalPnl: 0 });
   const [loading, setLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
+  const loadPredictions = useCallback(async () => {
+    try {
+      const predRes = await getPredictions().catch(() => ({ data: [] }));
+      const list = Array.isArray(predRes.data) ? predRes.data : [];
+      setPredictions(list);
+      return list;
+    } catch (e) {
+      console.error('Failed to load predictions:', e);
+      return [];
+    }
+  }, []);
+
   const loadData = useCallback(async () => {
     try {
-      const [predRes, statsRes] = await Promise.all([
-        getLatestPrediction().catch(() => ({ data: null })),
+      const [, statsRes] = await Promise.all([
+        loadPredictions(),
         getTradeStats().catch(() => ({ data: {} })),
       ]);
-      if (predRes.data && predRes.data.id) setPrediction(predRes.data);
       if (statsRes.data) setStats(statsRes.data);
     } catch (e) {
       console.error('Failed to load dashboard:', e);
@@ -26,11 +47,31 @@ export default function Dashboard({ mode, setMode }) {
   }, []);
 
   useEffect(() => {
-    loadData();
+    const bootstrap = async () => {
+      await loadData();
+      const initial = await loadPredictions();
+      if (initial.length === 0) {
+        setFetching(true);
+        try {
+          await fetchPredictionsForAllSymbols();
+          await loadData();
+        } catch (e) {
+          console.error('Bootstrap fetch failed:', e);
+        }
+        setFetching(false);
+      }
+    };
+
+    bootstrap();
 
     // Listen for real-time prediction updates
     subscribe('/topic/predictions', (data) => {
-      if (data && data.id) setPrediction(data);
+      if (data && data.id) {
+        setPredictions((prev) => {
+          const existing = prev.filter((p) => p.id !== data.id);
+          return [data, ...existing].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        });
+      }
     });
 
     subscribe('/topic/trades', () => {
@@ -43,13 +84,17 @@ export default function Dashboard({ mode, setMode }) {
     }, 30000);
 
     return () => clearInterval(interval);
-  }, [loadData]);
+  }, [loadData, loadPredictions]);
 
   const handleFetch = async () => {
     setFetching(true);
     try {
-      const res = await fetchPrediction(selectedSymbol);
-      if (res.data && res.data.id) setPrediction(res.data);
+      if (selectedSymbol === 'ALL') {
+        await fetchPredictionsForAllSymbols();
+      } else {
+        await fetchPrediction(selectedSymbol);
+      }
+      await loadData();
     } catch (e) {
       console.error('Fetch failed:', e);
     }
@@ -101,6 +146,15 @@ export default function Dashboard({ mode, setMode }) {
     );
   }
 
+  const filteredPredictions = predictions.filter((p) => {
+    const symbolOk = selectedSymbol === 'ALL' || String(p.symbol || '').toUpperCase().replace(/[\/\s-]/g, '') === selectedSymbol;
+    const signalOk = signalFilter === 'ALL' || p.signal === signalFilter;
+    const statusOk = statusFilter === 'ALL' || p.tradeStatus === statusFilter;
+    return symbolOk && signalOk && statusOk;
+  });
+
+  const availableStatuses = Array.from(new Set(predictions.map((p) => p.tradeStatus).filter(Boolean)));
+
   return (
     <div>
       {/* Top bar */}
@@ -120,6 +174,7 @@ export default function Dashboard({ mode, setMode }) {
               fontWeight: 600,
             }}
           >
+            <option value="ALL">All Symbols</option>
             <option value="BTCUSD">BTC/USD</option>
             <option value="EURUSD">EUR/USD</option>
             <option value="XAUUSD">XAU/USD</option>
@@ -167,27 +222,68 @@ export default function Dashboard({ mode, setMode }) {
         </div>
       </div>
 
-      {/* Latest Prediction */}
+      {/* Predictions with filters */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h3 className="section-title" style={{ margin: 0 }}>Latest Prediction</h3>
-        <button className="btn btn-primary" onClick={handleFetch} disabled={fetching}>
-          {fetching ? <span className="spinner" /> : '🔄'} Fetch New
-        </button>
+        <h3 className="section-title" style={{ margin: 0 }}>Predictions</h3>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <select
+            value={signalFilter}
+            onChange={(e) => setSignalFilter(e.target.value)}
+            style={{
+              background: 'var(--panel-2)',
+              border: '1px solid var(--border)',
+              color: 'var(--text-primary)',
+              borderRadius: 8,
+              padding: '8px 10px',
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            <option value="ALL">All Signals</option>
+            <option value="LONG">LONG</option>
+            <option value="SHORT">SHORT</option>
+          </select>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            style={{
+              background: 'var(--panel-2)',
+              border: '1px solid var(--border)',
+              color: 'var(--text-primary)',
+              borderRadius: 8,
+              padding: '8px 10px',
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            <option value="ALL">All Status</option>
+            {availableStatuses.map((status) => (
+              <option key={status} value={status}>{status}</option>
+            ))}
+          </select>
+          <button className="btn btn-primary" onClick={handleFetch} disabled={fetching}>
+            {fetching ? <span className="spinner" /> : '🔄'} Fetch {selectedSymbol === 'ALL' ? 'All' : selectedSymbol}
+          </button>
+        </div>
       </div>
 
-      {prediction ? (
-        <PredictionCard
-          prediction={prediction}
-          mode={mode}
-          onAccept={handleAccept}
-          onReject={handleReject}
-          actionLoading={actionLoading}
-        />
+      {filteredPredictions.length > 0 ? (
+        filteredPredictions.map((prediction) => (
+          <PredictionCard
+            key={prediction.id}
+            prediction={prediction}
+            mode={mode}
+            onAccept={handleAccept}
+            onReject={handleReject}
+            actionLoading={actionLoading}
+            compact
+          />
+        ))
       ) : (
         <div className="prediction-panel">
           <div className="empty-state">
             <div className="empty-state-icon">📡</div>
-            <p>No predictions yet. Click "Fetch New" to get your first AI prediction.</p>
+            <p>No predictions match current filters. Try clearing filters or fetching new predictions.</p>
           </div>
         </div>
       )}

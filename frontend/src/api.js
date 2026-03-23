@@ -41,6 +41,11 @@ export const getMe = () => api.get('/auth/me');
 
 // ── Predictions ──
 export const fetchPrediction = (symbol = 'BTCUSD') => api.post('/predictions/fetch', null, { params: { symbol } });
+export const SUPPORTED_SYMBOLS = ['BTCUSD', 'EURUSD', 'XAUUSD'];
+export const fetchPredictionsForAllSymbols = async () => {
+  const settled = await Promise.allSettled(SUPPORTED_SYMBOLS.map((symbol) => fetchPrediction(symbol)));
+  return settled;
+};
 export const getPredictions = () => api.get('/predictions');
 export const getLatestPrediction = () => api.get('/predictions/latest');
 export const acceptPrediction = (id) => api.post(`/predictions/${id}/accept`);
@@ -51,6 +56,7 @@ export const getTrades = () => api.get('/trades');
 export const getOpenTrades = () => api.get('/trades/open');
 export const getTradeStats = () => api.get('/trades/stats');
 export const closePosition = () => api.post('/trades/close');
+export const closeTradePosition = (tradeId) => api.post(`/trades/${tradeId}/close`);
 
 // ── Settings ──
 export const getSettings = () => api.get('/settings');
@@ -60,6 +66,7 @@ export const setMode = (mode) => api.put('/settings/mode', null, { params: { mod
 export const getDashboard = () => api.get('/dashboard');
 export const getAccountStatus = (symbol = 'BTCUSD') => api.get('/account', { params: { symbol } });
 export const getModelInfo = () => api.get('/model');
+export const getModelInfoAll = () => api.get('/model/all');
 export const trainModel = () => api.post('/train');
 export const healthCheck = () => api.get('/health');
 

@@ -114,7 +114,7 @@ public class AiEngineClient {
     public Map<String, Object> trainModel() {
         try {
             String json = webClient.post()
-                    .uri("/train")
+                    .uri("/train-all")
                     .retrieve()
                     .bodyToMono(String.class)
                     .block();
@@ -187,6 +187,21 @@ public class AiEngineClient {
         } catch (Exception e) {
             log.error("Failed to get model info: {}", e.getMessage());
             throw new RuntimeException("Model info fetch failed: " + e.getMessage(), e);
+        }
+    }
+
+    public Map<String, Object> getModelInfoAll() {
+        try {
+            String json = webClient.get()
+                    .uri("/model-info-all")
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .block();
+
+            return objectMapper.readValue(json, Map.class);
+        } catch (Exception e) {
+            log.error("Failed to get model info (all): {}", e.getMessage());
+            throw new RuntimeException("Model info (all) fetch failed: " + e.getMessage(), e);
         }
     }
 

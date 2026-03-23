@@ -40,10 +40,10 @@ from ml_core.trainer import train_model
 logger = logging.getLogger("sorbot.retrainer")
 
 HISTORY_FILE = MODEL_DIR / "retrain_history.json"
-BACKUP_MODEL = MODEL_DIR / "btc_model_backup.json"
-BACKUP_META = MODEL_DIR / "btc_meta_backup.json"
-CURRENT_MODEL = MODEL_DIR / "btc_model.json"
-CURRENT_META = MODEL_DIR / "btc_meta.json"
+BACKUP_MODEL = MODEL_DIR / "BTCUSD_xgb_backup.json"
+BACKUP_META = MODEL_DIR / "BTCUSD_meta_backup.json"
+CURRENT_MODEL = MODEL_DIR / "BTCUSD_xgb.json"
+CURRENT_META = MODEL_DIR / "BTCUSD_meta.json"
 
 
 class RetrainingScheduler:

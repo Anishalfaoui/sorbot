@@ -48,4 +48,12 @@ public class TradeController {
     public Map<String, Object> closePosition() {
         return tradingService.closePosition();
     }
+
+    /**
+     * POST /api/trades/{tradeId}/close — Close a specific open position.
+     */
+    @PostMapping("/{tradeId}/close")
+    public Map<String, Object> closePositionById(@PathVariable Long tradeId) {
+        return tradingService.closePosition(tradeId);
+    }
 }

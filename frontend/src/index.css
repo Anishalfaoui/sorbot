@@ -383,6 +383,107 @@ body {
   background: var(--bg-card-hover);
 }
 
+/* ── Trades Enhancements ── */
+.trades-hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(59, 130, 246, 0.18), transparent 38%),
+    radial-gradient(circle at 100% 100%, rgba(16, 185, 129, 0.12), transparent 35%),
+    var(--bg-card);
+}
+
+.trades-hero-balance {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.trades-hero-balance .label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+}
+
+.trades-hero-balance strong {
+  font-size: 28px;
+  line-height: 1;
+  color: #dbeafe;
+}
+
+.trades-hero-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  background: rgba(17, 24, 39, 0.9);
+}
+
+.chip-green {
+  color: var(--green);
+  border-color: rgba(16, 185, 129, 0.35);
+  background: var(--green-bg);
+}
+
+.chip-red {
+  color: var(--red);
+  border-color: rgba(239, 68, 68, 0.35);
+  background: var(--red-bg);
+}
+
+.open-trades-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  padding: 14px;
+}
+
+.open-trade-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--bg-secondary);
+}
+
+.open-trade-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.open-trade-symbol {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.open-trade-time {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.open-trade-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 /* ── Table ── */
 .table-container {
   background: var(--bg-card);
