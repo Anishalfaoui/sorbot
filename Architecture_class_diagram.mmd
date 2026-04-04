@@ -1,0 +1,86 @@
+classDiagram
+direction LR
+
+class User {
+  +Long id
+  +String username
+  +String email
+  +Role role
+  +Double virtualBalance
+}
+
+class TradingSettings {
+  +Long id
+  +String mode
+  +Boolean autoTradeEnabled
+}
+
+class Prediction {
+  +Long id
+  +LocalDateTime timestamp
+  +String symbol
+  +String signal
+  +Double confidencePct
+  +Double currentPrice
+  +Double slPrice
+  +Double tpPrice
+  +String tradeStatus
+  +String tradeMode
+}
+
+class Trade {
+  +Long id
+  +LocalDateTime executedAt
+  +String symbol
+  +String side
+  +Double entryPrice
+  +Double exitPrice
+  +Double quantity
+  +Double pnl
+  +String status
+  +LocalDateTime closedAt
+}
+
+class TradingService {
+  +fetchNewPrediction(symbol)
+  +acceptPrediction(predictionId)
+  +closePosition(tradeId)
+  +importHistoricalTrades(request)
+  +getTradeStats()
+}
+
+class AiEngineClient {
+  +getPrediction(symbol, balance)
+  +executeTrade(signal, entry, sl, tp, qty, symbol, balance)
+  +getPrice(symbol)
+  +trainModel()
+}
+
+class PredictionScheduler {
+  +runPredictionCycle()
+}
+
+class PredictionController
+class TradeController
+class DashboardController
+
+class PredictionRepository
+class TradeRepository
+class TradingSettingsRepository
+class UserRepository
+
+User "1" --> "*" Prediction : owns
+User "1" --> "*" Trade : owns
+Prediction "1" --> "0..1" Trade : may_create
+
+TradeController --> TradingService
+PredictionController --> TradingService
+DashboardController --> TradingService
+PredictionScheduler --> TradingService
+
+TradingService --> AiEngineClient
+TradingService --> PredictionRepository
+TradingService --> TradeRepository
+TradingService --> TradingSettingsRepository
+TradingService --> UserRepository
+TradingService --> TradingSettings

@@ -1,0 +1,59 @@
+%%{init: {'theme':'base','themeVariables': {
+  'primaryColor':'#EAF2FF',
+  'primaryTextColor':'#111827',
+  'lineColor':'#334155',
+  'secondaryColor':'#F8FAFC',
+  'tertiaryColor':'#EEFDF3'
+}}}%%
+flowchart LR
+
+  U([Trader])
+  S([System Scheduler])
+  A([AI Engine FastAPI])
+  M([Market Data Providers\nyfinance / Binance])
+
+  subgraph Sorbot[Core Use Cases]
+    UC1[Register / Login]
+    UC2[View Dashboard]
+    UC3[Fetch Prediction]
+    UC4[Review Prediction]
+    UC5[Accept Prediction]
+    UC6[Reject Prediction]
+    UC7[Auto Trade Mode]
+    UC8[Execute Virtual Trade]
+    UC9[Close Open Position]
+    UC10[View Trade Stats]
+    UC11[Train Model]
+    UC12[Import Historical Trades]
+  end
+
+  U --> UC1
+  U --> UC2
+  U --> UC3
+  U --> UC4
+  U --> UC5
+  U --> UC6
+  U --> UC9
+  U --> UC10
+  U --> UC11
+  U --> UC12
+
+  S --> UC3
+  S --> UC7
+
+  UC5 --> UC8
+  UC7 --> UC8
+  UC3 --> UC4
+
+  A --> UC3
+  A --> UC8
+  A --> UC11
+
+  M --> UC3
+  M --> UC11
+
+  classDef actor fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px;
+  classDef usecase fill:#eef2ff,stroke:#3730a3,color:#1e1b4b,stroke-width:1.2px;
+
+  class U,S,A,M actor;
+  class UC1,UC2,UC3,UC4,UC5,UC6,UC7,UC8,UC9,UC10,UC11,UC12 usecase;

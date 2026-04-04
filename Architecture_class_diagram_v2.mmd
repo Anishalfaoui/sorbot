@@ -1,0 +1,92 @@
+%%{init: {'theme':'base','themeVariables': {
+  'primaryColor':'#E8F4FF',
+  'primaryTextColor':'#0F172A',
+  'lineColor':'#1F2937',
+  'secondaryColor':'#FFF4E6',
+  'tertiaryColor':'#E8FFF1'
+}}}%%
+classDiagram
+  direction LR
+
+  class User {
+    +id: Long
+    +username: String
+    +email: String
+    +role: Role
+    +virtualBalance: Double
+  }
+
+  class TradingSettings {
+    +id: Long
+    +mode: String
+    +autoTradeEnabled: Boolean
+  }
+
+  class Prediction {
+    +id: Long
+    +timestamp: LocalDateTime
+    +symbol: String
+    +signal: String
+    +confidencePct: Double
+    +currentPrice: Double
+    +slPrice: Double
+    +tpPrice: Double
+    +tradeStatus: String
+    +tradeMode: String
+  }
+
+  class Trade {
+    +id: Long
+    +executedAt: LocalDateTime
+    +symbol: String
+    +side: String
+    +entryPrice: Double
+    +exitPrice: Double
+    +quantity: Double
+    +pnl: Double
+    +status: String
+    +closedAt: LocalDateTime
+  }
+
+  class TradingService {
+    +fetchNewPrediction(symbol)
+    +acceptPrediction(predictionId)
+    +closePosition(tradeId)
+    +importHistoricalTrades(request)
+    +getTradeStats()
+  }
+
+  class AiEngineClient {
+    +getPrediction(symbol,balance)
+    +executeTrade(...)
+    +getPrice(symbol)
+    +trainModel()
+  }
+
+  class PredictionScheduler {
+    +runPredictionCycle()
+  }
+
+  class PredictionController
+  class TradeController
+  class DashboardController
+  class PredictionRepository
+  class TradeRepository
+  class TradingSettingsRepository
+  class UserRepository
+
+  User "1" --> "*" Prediction : owns
+  User "1" --> "*" Trade : owns
+  Prediction "1" --> "0..1" Trade : may_create
+
+  TradeController --> TradingService
+  PredictionController --> TradingService
+  DashboardController --> TradingService
+  PredictionScheduler --> TradingService
+
+  TradingService --> AiEngineClient
+  TradingService --> PredictionRepository
+  TradingService --> TradeRepository
+  TradingService --> TradingSettingsRepository
+  TradingService --> UserRepository
+  TradingService --> TradingSettings

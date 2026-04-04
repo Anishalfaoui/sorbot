@@ -1,0 +1,46 @@
+usecaseDiagram
+
+actor Trader as User
+actor "System Scheduler" as Scheduler
+actor "AI Engine (FastAPI)" as AiEngine
+actor "Market Data Providers\n(yfinance / Binance)" as Market
+
+rectangle Sorbot {
+  (Register / Login)
+  (View Dashboard)
+  (Fetch Prediction)
+  (Review Prediction)
+  (Accept Prediction)
+  (Reject Prediction)
+  (Auto Trade Mode)
+  (Execute Virtual Trade)
+  (Close Open Position)
+  (View Trade Stats)
+  (Train Model)
+  (Import Historical Trades)
+}
+
+User --> (Register / Login)
+User --> (View Dashboard)
+User --> (Fetch Prediction)
+User --> (Review Prediction)
+User --> (Accept Prediction)
+User --> (Reject Prediction)
+User --> (Close Open Position)
+User --> (View Trade Stats)
+User --> (Train Model)
+User --> (Import Historical Trades)
+
+Scheduler --> (Fetch Prediction)
+Scheduler --> (Auto Trade Mode)
+
+(Accept Prediction) ..> (Execute Virtual Trade) : <<include>>
+(Auto Trade Mode) ..> (Execute Virtual Trade) : <<include>>
+(Fetch Prediction) ..> (Review Prediction) : <<include>>
+
+AiEngine --> (Fetch Prediction)
+AiEngine --> (Execute Virtual Trade)
+AiEngine --> (Train Model)
+
+Market --> (Fetch Prediction)
+Market --> (Train Model)

@@ -1,0 +1,31 @@
+flowchart TD
+    A[Market Data Sources\nyfinance and Binance] --> B[AI Data Loader\nfetch_all_timeframes]
+    B --> C[Feature Engineering\nbuild_dataset with technical features]
+    C --> D[Model Training\nXGBoost walk-forward CV]
+    D --> E[Persist Model and Metadata\nmodels/*.json]
+
+    E --> F[Prediction Request\nBackend calls AI /predict]
+    B --> F
+    C --> F
+
+    F --> G[Predictor\nSignal LONG or SHORT\nSL TP sizing context]
+    G --> H[Backend stores Prediction\nstatus PENDING or AUTO_EXECUTING]
+
+    H --> I{User Decision or Auto Mode}
+    I -->|Accept| J[Backend /predictions/{id}/accept]
+    I -->|Auto| K[Scheduler triggers auto execution]
+    I -->|Reject| R[Prediction marked REJECTED]
+
+    J --> L[AI /trade validation and sizing]
+    K --> L
+
+    L --> M{Execution Result}
+    M -->|TRADE_EXECUTED| N[Persist Trade in DB\nstatus OPEN]
+    M -->|BLOCKED or ERROR| O[Prediction updated with reason]
+
+    N --> P[Manual Close or Rule-based Exit]
+    P --> Q[Update Trade CLOSED\nCompute pnl and pnlPct\nUpdate user virtualBalance]
+
+    Q --> S[Trade Stats and Dashboard Refresh\nREST + WebSocket]
+    O --> S
+    R --> S

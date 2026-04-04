@@ -1,5 +1,6 @@
 package com.sorbot.backend.controller;
 
+import com.sorbot.backend.dto.HistoricalTradeImportRequest;
 import com.sorbot.backend.model.Trade;
 import com.sorbot.backend.service.TradingService;
 import org.springframework.web.bind.annotation.*;
@@ -55,5 +56,13 @@ public class TradeController {
     @PostMapping("/{tradeId}/close")
     public Map<String, Object> closePositionById(@PathVariable Long tradeId) {
         return tradingService.closePosition(tradeId);
+    }
+
+    /**
+     * POST /api/trades/import — Import closed historical trades into DB for current user.
+     */
+    @PostMapping("/import")
+    public Map<String, Object> importHistoricalTrades(@RequestBody HistoricalTradeImportRequest request) {
+        return tradingService.importHistoricalTrades(request);
     }
 }

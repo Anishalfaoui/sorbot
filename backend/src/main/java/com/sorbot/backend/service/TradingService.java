@@ -1,6 +1,8 @@
 package com.sorbot.backend.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sorbot.backend.dto.HistoricalTradeImportRequest;
+import com.sorbot.backend.dto.HistoricalTradeRowDto;
 import com.sorbot.backend.model.Prediction;
 import com.sorbot.backend.model.Trade;
 import com.sorbot.backend.model.TradingSettings;
@@ -18,6 +20,8 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 
 @Service
@@ -361,6 +365,136 @@ public class TradingService {
         }
     }
 
+    public Map<String, Object> importHistoricalTrades(HistoricalTradeImportRequest request) {
+        User user = getCurrentUser();
+
+        if (request == null || request.getTrades() == null || request.getTrades().isEmpty()) {
+            return Map.of("error", "No trades provided for import.");
+        }
+
+        boolean clearExisting = Boolean.TRUE.equals(request.getClearExistingTrades());
+        if (clearExisting) {
+            tradeRepo.deleteByUserId(user.getId());
+        }
+
+        List<HistoricalTradeRowDto> rows = new ArrayList<>(request.getTrades());
+        rows.sort(Comparator.comparing(r -> {
+            LocalDateTime t = parseDateTimeSafe(r.getEntryTime());
+            return t != null ? t : LocalDateTime.MIN;
+        }));
+
+        List<Trade> tradesToSave = new ArrayList<>();
+        double totalPnl = 0.0;
+        long wins = 0;
+        long losses = 0;
+        Double lastBalanceAfter = null;
+
+        for (HistoricalTradeRowDto row : rows) {
+            if (row == null) continue;
+
+            Trade trade = new Trade();
+            trade.setUser(user);
+            trade.setPrediction(null);
+
+            LocalDateTime executedAt = parseDateTimeSafe(row.getEntryTime());
+            LocalDateTime closedAt = parseDateTimeSafe(row.getExitTime());
+            if (executedAt == null) {
+                executedAt = LocalDateTime.now();
+            }
+            if (closedAt == null || closedAt.isBefore(executedAt)) {
+                closedAt = executedAt;
+            }
+
+            trade.setExecutedAt(executedAt);
+            trade.setClosedAt(closedAt);
+            trade.setSymbol(normalizeSymbol(row.getSymbol()));
+
+            String side = row.getSide() != null ? row.getSide().toUpperCase(Locale.ROOT) : "LONG";
+            trade.setSide("SHORT".equals(side) ? "SHORT" : "LONG");
+
+            double entry = nz(row.getEntryPrice());
+            double exit = nz(row.getExitPrice());
+            double qty = nz(row.getQty());
+            if (qty <= 0 && entry > 0 && row.getNotionalUsd() != null) {
+                qty = Math.abs(row.getNotionalUsd() / entry);
+            }
+            qty = Math.max(qty, 0.0);
+
+            trade.setEntryPrice(entry > 0 ? entry : null);
+            trade.setSlPrice(row.getSlPrice());
+            trade.setTpPrice(row.getTpPrice());
+            trade.setQuantity(qty > 0 ? qty : null);
+            trade.setExitPrice(exit > 0 ? exit : null);
+
+            Double rr = computeRiskReward(entry, row.getSlPrice(), row.getTpPrice());
+            trade.setRiskReward(rr);
+
+            double pnl = row.getPnlUsd() != null ? row.getPnlUsd() : computePnlFromPrices(side, entry, exit, qty);
+            trade.setPnl(round2(pnl));
+
+            double denom = entry > 0 && qty > 0 ? (entry * qty) : 0.0;
+            double pnlPct = denom > 0 ? (pnl / denom) * 100.0 : 0.0;
+            trade.setPnlPct(round2(pnlPct));
+
+            trade.setStatus("CLOSED");
+            trade.setCloseReason(mapOutcomeToCloseReason(row.getOutcome()));
+            trade.setMode("HISTORICAL_IMPORT");
+            trade.setErrorMessage(null);
+
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("source", "historical_simulation");
+            details.put("day", row.getDay());
+            details.put("slot_time", row.getSlotTime());
+            details.put("confidence_pct", row.getConfidencePct());
+            details.put("reject_reason", row.getRejectReason());
+            details.put("notional_usd", row.getNotionalUsd());
+            details.put("outcome", row.getOutcome());
+            try {
+                trade.setOrderDetails(objectMapper.writeValueAsString(details));
+            } catch (Exception e) {
+                trade.setOrderDetails("{}");
+            }
+
+            tradesToSave.add(trade);
+            totalPnl += pnl;
+            if (pnl > 0) wins++; else losses++;
+            if (row.getBalanceAfter() != null) {
+                lastBalanceAfter = row.getBalanceAfter();
+            }
+        }
+
+        if (tradesToSave.isEmpty()) {
+            return Map.of("error", "No valid trades to import.");
+        }
+
+        tradeRepo.saveAll(tradesToSave);
+
+        double currentBalance = user.getVirtualBalance() != null ? user.getVirtualBalance() : 10000.0;
+        double finalBalance;
+        if (request.getFinalBalance() != null) {
+            finalBalance = request.getFinalBalance();
+        } else if (lastBalanceAfter != null) {
+            finalBalance = lastBalanceAfter;
+        } else {
+            finalBalance = currentBalance + totalPnl;
+        }
+
+        user.setVirtualBalance(round2(finalBalance));
+        userRepo.save(user);
+
+        messagingTemplate.convertAndSend("/topic/trades", getRecentTrades());
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("status", "ok");
+        result.put("importedTrades", tradesToSave.size());
+        result.put("wins", wins);
+        result.put("losses", losses);
+        result.put("totalPnl", round2(totalPnl));
+        result.put("clearExistingTrades", clearExisting);
+        result.put("newVirtualBalance", round2(finalBalance));
+        return result;
+    }
+
     public Map<String, Object> getModelInfoAll() {
         try {
             return aiEngineClient.getModelInfoAll();
@@ -499,6 +633,63 @@ public class TradingService {
         if ("EURUSD".equals(s)) return "EURUSD";
         if ("XAUUSD".equals(s)) return "XAUUSD";
         return DEFAULT_SYMBOL;
+    }
+
+    private LocalDateTime parseDateTimeSafe(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        String value = raw.trim();
+
+        try {
+            return LocalDateTime.parse(value, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        } catch (DateTimeParseException ignored) {
+        }
+
+        String normalized = value.replace(" ", "T");
+        try {
+            return LocalDateTime.parse(normalized, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        } catch (DateTimeParseException ignored) {
+        }
+
+        try {
+            return LocalDateTime.parse(value, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        } catch (DateTimeParseException ignored) {
+        }
+
+        try {
+            return LocalDateTime.parse(value, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+        } catch (DateTimeParseException ignored) {
+        }
+
+        return null;
+    }
+
+    private String mapOutcomeToCloseReason(String outcome) {
+        if (outcome == null) return "HISTORICAL_IMPORT";
+        String o = outcome.toUpperCase(Locale.ROOT);
+        if ("TP".equals(o)) return "TP_HIT";
+        if ("SL".equals(o)) return "SL_HIT";
+        if ("EXPIRED".equals(o)) return "TIME_EXIT";
+        return "HISTORICAL_IMPORT";
+    }
+
+    private Double computeRiskReward(double entry, Double sl, Double tp) {
+        if (entry <= 0 || sl == null || tp == null) return null;
+        double risk = Math.abs(entry - sl);
+        if (risk <= 0) return null;
+        double reward = Math.abs(tp - entry);
+        return round2(reward / risk);
+    }
+
+    private double computePnlFromPrices(String side, double entry, double exit, double qty) {
+        if (entry <= 0 || exit <= 0 || qty <= 0) return 0.0;
+        if ("SHORT".equalsIgnoreCase(side)) {
+            return (entry - exit) * qty;
+        }
+        return (exit - entry) * qty;
+    }
+
+    private double nz(Double value) {
+        return value != null ? value : 0.0;
     }
 
     private double calculatePnl(Trade trade, double currentPrice) {

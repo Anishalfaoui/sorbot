@@ -1,0 +1,52 @@
+%%{init: {'theme':'base','themeVariables': {
+  'primaryColor':'#EAF4FF',
+  'primaryTextColor':'#0B1324',
+  'lineColor':'#1E293B',
+  'secondaryColor':'#FFF7E6',
+  'tertiaryColor':'#ECFDF3'
+}}}%%
+flowchart LR
+
+  subgraph DATA[Data & Feature Layer]
+    A[Market Data\nyfinance + Binance]
+    B[Data Loader\nfetch_all_timeframes]
+    C[Feature Engineering\nbuild_dataset]
+  end
+
+  subgraph ML[Model Layer]
+    D[Training\nXGBoost walk-forward CV]
+    E[Model Registry\nmodels/*.json]
+    F[Predictor\nLONG / SHORT + SL/TP]
+  end
+
+  subgraph BACKEND[Backend Orchestration]
+    G[Fetch Prediction\n/api/predictions/fetch]
+    H[Store Prediction\nPENDING or AUTO_EXECUTING]
+    I{Decision}
+    J[Accept Prediction\n/api/predictions/by-id/accept]
+    K[Auto Execution\nScheduler]
+    L[Trade Validation\n/api/trade in AI]
+    M{Execution Result}
+    N[Persist Trade OPEN\nDB: trades]
+    O[Update Prediction\nREJECTED / FAILED]
+    P[Close Position]
+    Q[Persist CLOSED + PnL\nUpdate virtualBalance]
+  end
+
+  subgraph UI[Presentation Layer]
+    R[Dashboard + Trades + Stats\nREST + WebSocket]
+  end
+
+  A --> B --> C --> D --> E
+  E --> F
+  B --> G
+  C --> G
+  G --> F --> H --> I
+
+  I -->|Accept| J --> L
+  I -->|Auto| K --> L
+  I -->|Reject| O
+
+  L --> M
+  M -->|TRADE_EXECUTED| N --> P --> Q --> R
+  M -->|BLOCKED / ERROR| O --> R

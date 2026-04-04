@@ -18,6 +18,7 @@ public interface TradeRepository extends JpaRepository<Trade, Long> {
 
     Trade findFirstByUserIdAndStatusOrderByExecutedAtDesc(Long userId, String status);
     Optional<Trade> findByIdAndUserId(Long id, Long userId);
+    void deleteByUserId(Long userId);
 
     @Query("SELECT COUNT(t) FROM Trade t WHERE t.status = 'CLOSED' AND t.pnl > 0")
     long countWins();
