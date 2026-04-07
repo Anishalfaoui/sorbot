@@ -1,6 +1,6 @@
-# Sorbot — AI-Powered BTC/USD Trading Bot
+# Sorbot — AI-Powered BTC/USD & EUR/USD & XAU/USD Trading Bot
 
-Sorbot is a **distributed algorithmic trading system** that uses machine learning to trade **BTC/USD spot** on Binance. It combines an XGBoost model trained on 122+ technical features with real-time market data, automated risk management, and continuous self-retraining — all orchestrated through a modern web dashboard.
+Sorbot is a **distributed algorithmic trading system** that uses machine learning to trade on the market. It combines an XGBoost model trained on 122+ technical features with real-time market data, automated risk management, and continuous self-retraining — all orchestrated through a modern web dashboard.
 
 ---
 
@@ -16,7 +16,6 @@ Sorbot is a **distributed algorithmic trading system** that uses machine learnin
   - [Prediction & Signal Generation](#prediction--signal-generation)
   - [Continuous Retraining Scheduler](#continuous-retraining-scheduler)
   - [Risk Management](#risk-management)
-  - [Exchange Integration](#exchange-integration-binance-spot)
   - [Backtester](#backtester)
 - [Backend (Java / Spring Boot)](#backend-java--spring-boot)
   - [API Endpoints](#backend-api-endpoints)
@@ -45,17 +44,13 @@ Sorbot is a **distributed algorithmic trading system** that uses machine learnin
                                           │                                  │
                                           ▼                                  ▼
                                    ┌──────────────┐                   ┌──────────────┐
-                                   │  PostgreSQL  │                   │   Binance    │
-                                   │  (Supabase)  │                   │  Spot API    │
+                                   │  PostgreSQL  │                   │   yfinance   │
+                                   │  (Supabase)  │                   │ (historical) │
                                    └──────────────┘                   └──────────────┘
-                                                                             │
-                                                                      ┌──────────────┐
-                                                                      │   yfinance   │
-                                                                      │ (historical) │
-                                                                      └──────────────┘
+
 ```
 
-**Data flow:** Frontend → Backend (REST + WebSocket) → AI Engine (REST via WebClient) → Binance API + yfinance
+**Data flow:** Frontend → Backend (REST + WebSocket) → AI Engine (REST via WebClient) →  yfinance
 
 ---
 
@@ -79,10 +74,10 @@ The core intelligence of Sorbot. Located in `ai_engine/`.
 |--------|------|-------------|
 | `GET` | `/` | Health check — returns engine status, model state, retrain count |
 | `POST` | `/train` | Retrain model on the latest market data; returns CV + final metrics |
-| `GET` | `/predict` | Get latest BTC/USD trading signal with full market analysis |
-| `POST` | `/trade` | Get prediction → if LONG + high confidence → execute on Binance |
-| `GET` | `/status` | Account balance, open positions, Binance account info |
-| `POST` | `/close` | Close any open BTC position at market price |
+| `GET` | `/predict` | Get latest BTC/USD & EUR/USD & XAU/USD trading signal with full market analysis |
+| `POST` | `/trade` | Get prediction → if LONG + high confidence → execute |
+| `GET` | `/status` | Account balance, open positions, account info |
+| `POST` | `/close` | Close any open BTC & EUR & XAU position at market price |
 | `GET` | `/model-info` | Trained model metrics and top feature importances |
 | `GET` | `/retrain-status` | Continuous retraining scheduler status + recent history |
 | `POST` | `/retrain-now` | Manually trigger an immediate retrain (force mode, skips validation) |
@@ -96,7 +91,7 @@ The core intelligence of Sorbot. Located in `ai_engine/`.
 
 **File:** `ai_engine/ml_core/data_loader.py`
 
-The data loader fetches BTC/USD OHLCV (Open, High, Low, Close, Volume) data from **yfinance** across three timeframes:
+The data loader fetches BTC/USD & EUR/USD & XAU/USD OHLCV (Open, High, Low, Close, Volume) data from **yfinance** across three timeframes:
 
 | Timeframe | Method | Coverage | Bars |
 |-----------|--------|----------|------|
@@ -241,7 +236,7 @@ Each prediction goes through a multi-step enrichment pipeline:
 
 1. **Feature alignment:** Match current features to training features (fill missing with 0)
 2. **Probability:** XGBoost outputs P(UP) for the latest bar
-3. **Live price:** Fetches real-time BTC price from Binance public API (falls back to yfinance last close)
+3. **Live price:** Fetches real-time prices from yfinance public API
 4. **Signal determination:**
    - P(UP) ≥ 0.65 → **LONG** (buy signal)
    - P(UP) ≤ 0.35 → **SHORT** (sell signal, blocked in spot mode)
@@ -309,34 +304,13 @@ Conservative risk rules designed for a $500 spot account with no leverage:
 | Take-profit | 3.0× ATR | 2:1 reward-to-risk target |
 | Trailing stop | 1.0× ATR | Optional trailing stop distance |
 | Minimum R:R | 1.8 | Trade rejected if R:R < 1.8 |
-| Min balance | $10 | Won't trade below this |
-| Min order | $10 / 0.00001 BTC | Binance minimum requirements |
 
-**Position sizing:** Calculates BTC quantity from `(risk_amount) / (entry – SL distance)`, capped at 95% of available balance.
 
----
 
-### Exchange Integration (Binance Spot)
-
-**File:** `ai_engine/ml_core/exchange.py`
-
-Connects to Binance via `python-binance`. Supports testnet mode.
-
-| Method | Description |
-|--------|-------------|
-| `connect()` | Initialize Binance Client (spot, optional testnet) |
-| `get_balance()` | Total USDT balance (free + locked) |
-| `get_available_balance()` | Free USDT only |
-| `get_btc_balance()` | Free BTC balance |
-| `get_position()` | Open position details (qty, entry, current price, unrealized PnL) |
-| `get_current_price()` | Latest BTCUSDT spot price |
-| `place_order()` | Market BUY → OCO sell order (SL + TP combined); falls back to separate stop-loss if OCO fails |
-| `close_position()` | Cancel all open orders → market SELL all BTC → calculate PnL |
-| `cancel_all_orders()` | Cancel all open BTCUSDT orders |
-
-**Order flow:** Market BUY at current price → immediately places an OCO (One-Cancels-Other) order with both the take-profit limit sell and stop-loss limit sell. If OCO creation fails, a standalone stop-loss limit order is placed as fallback.
+**Position sizing:** Calculates BTC & EUR & XAU quantity from `(risk_amount) / (entry – SL distance)`, capped at 95% of available balance.
 
 ---
+
 
 ### Backtester
 
@@ -367,7 +341,7 @@ The middleware layer that sits between the frontend and AI engine. Located in `b
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/dashboard` | Aggregated view: settings, latest prediction, trade stats, AI health |
-| `GET` | `/api/account` | Binance account status (via AI engine) |
+| `GET` | `/api/account` | account status |
 | `GET` | `/api/model` | AI model metrics and feature importances |
 | `POST` | `/api/train` | Trigger model retraining (via AI engine) |
 | `GET` | `/api/health` | Backend health + AI engine connectivity |
@@ -379,7 +353,7 @@ The middleware layer that sits between the frontend and AI engine. Located in `b
 | `GET` | `/api/predictions` | Last 50 predictions |
 | `GET` | `/api/predictions/latest` | Most recent prediction |
 | `POST` | `/api/predictions/fetch` | Manually fetch a new prediction from AI engine |
-| `POST` | `/api/predictions/{id}/accept` | Accept a pending prediction → execute trade on Binance |
+| `POST` | `/api/predictions/{id}/accept` | Accept a pending prediction → execute trade |
 | `POST` | `/api/predictions/{id}/reject` | Reject a pending prediction |
 
 #### Trades (`/api/trades`)
@@ -410,12 +384,12 @@ The backend uses a PostgreSQL database hosted on Supabase with auto DDL generati
 |--------|------|-------------|
 | `id` | Long (PK, auto) | Unique identifier |
 | `timestamp` | LocalDateTime | When the prediction was made |
-| `symbol` | String | Trading pair (BTC/USD) |
+| `symbol` | String | Trading pair (BTC/USD & EUR/USD & XAU/USD) |
 | `signal` | String | LONG, SHORT, or NO_TRADE |
 | `probability_up` | Double | P(price goes up) from model |
 | `probability_down` | Double | P(price goes down) |
 | `confidence_pct` | Double | Max probability as percentage |
-| `current_price` | Double | BTC price at prediction time |
+| `current_price` | Double | BTC & EUR & XAU price at prediction time |
 | `atr` | Double | Average True Range value |
 | `atr_pct` | Double | ATR as % of price |
 | `sl_price` | Double | Stop-loss price level |
@@ -452,7 +426,7 @@ The backend uses a PostgreSQL database hosted on Supabase with auto DDL generati
 | `entry_price` | Double | Entry price |
 | `sl_price` | Double | Stop-loss price |
 | `tp_price` | Double | Take-profit price |
-| `quantity` | Double | BTC quantity traded |
+| `quantity` | Double | BTC & EUR & XAU quantity traded |
 | `risk_reward` | Double | R:R ratio |
 | `mode` | String | AUTO or MANUAL |
 | `status` | String | OPEN / CLOSED / FAILED / CANCELLED |
@@ -461,7 +435,7 @@ The backend uses a PostgreSQL database hosted on Supabase with auto DDL generati
 | `pnl_pct` | Double | Profit/loss as percentage |
 | `closed_at` | LocalDateTime | When trade was closed |
 | `close_reason` | String | TP_HIT / SL_HIT / MANUAL_CLOSE / ERROR |
-| `order_details` | Text | Raw Binance order JSON |
+| `order_details` | Text | Raw order JSON |
 | `error_message` | String | Error details (if failed) |
 
 #### `trading_settings` Table
@@ -489,7 +463,7 @@ The core orchestrator that manages the trading lifecycle:
 2. **Mode check:**
    - **AUTO mode:** If signal is LONG → calls AI engine `POST /trade` → saves trade → broadcasts update
    - **MANUAL mode:** Saves prediction as PENDING → user reviews in dashboard → Accept/Reject
-3. **Accept prediction:** `POST /api/predictions/{id}/accept` → executes trade on Binance
+3. **Accept prediction:** `POST /api/predictions/{id}/accept` → executes trade
 4. **Reject prediction:** `POST /api/predictions/{id}/reject` → marks as REJECTED
 5. **Trade stats:** Aggregates wins/losses/total PnL from database
 
@@ -698,7 +672,6 @@ sorbot/
 │       ├── trainer.py            # Walk-forward XGBoost training
 │       ├── predictor.py          # Enriched predictions
 │       ├── risk_manager.py       # Position sizing & risk rules
-│       ├── exchange.py           # Binance spot API wrapper
 │       └── retrainer.py          # Continuous retraining scheduler
 │
 ├── backend/                      # Java Spring Boot Backend
@@ -766,7 +739,7 @@ sorbot/
 2. AUTO MODE
    If signal = LONG + confidence ≥ 65%:
    TradingService → AiEngineClient → AI Engine POST /trade
-   → RiskManager validates → BinanceExchange places market BUY + OCO SL/TP
+   → RiskManager validates → places market BUY + OCO SL/TP
    → Trade saved to PostgreSQL → WebSocket broadcast to frontend
 
 3. MANUAL MODE
