@@ -5,7 +5,7 @@ Sorbot is a **distributed algorithmic trading system** that uses machine learnin
 ---
 
 ## Table of Contents
-
+- [Getting Started](#getting-started)
 - [System Architecture](#system-architecture)
 - [Services Overview](#services-overview)
 - [AI Engine (Python)](#ai-engine-python)
@@ -27,8 +27,75 @@ Sorbot is a **distributed algorithmic trading system** that uses machine learnin
   - [Components](#components)
   - [WebSocket Client](#websocket-client)
 - [Configuration Reference](#configuration-reference)
-- [Getting Started](#getting-started)
 - [Project Structure](#project-structure)
+
+
+## Getting Started
+
+### Prerequisites
+- Docker & Docker Compose
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/Anishalfaoui/sorbot.git
+cd sorbot
+```
+
+### 2. Configure environment
+
+Create a `.env` file at the project root:
+
+```env
+DEFAULT_SYMBOL=BTCUSD
+VIRTUAL_ACCOUNT_INITIAL_BALANCE=10000
+```
+
+### 3. Start all services
+
+**Windows (PowerShell):**
+```powershell
+.\start.ps1
+```
+
+**Windows (CMD):**
+```cmd
+start.bat
+```
+
+**Manual Docker:**
+```bash
+docker compose build
+docker compose up -d
+```
+
+### 4. Access the dashboard
+
+Open [http://localhost:3000](http://localhost:3000) in your browser.
+
+### 5. Access the Database
+
+Sorbot uses a **PostgreSQL** database hosted on **Supabase** to store users, trades, predictions, and settings. You can inspect the database through the Supabase dashboard:
+
+**URL:** [https://supabase.com/dashboard](https://supabase.com/dashboard)
+
+Navigate to your project's **Table Editor** or **SQL Editor** to run queries such as:
+
+```sql
+SELECT * FROM users;
+SELECT * FROM trades;
+SELECT * FROM predictions;
+```
+
+### 6. Stop all services
+
+```cmd
+stop.bat
+```
+or
+```bash
+docker compose down
+```
 
 ---
 
@@ -571,75 +638,6 @@ All feature engineering, model training, prediction, and risk management paramet
 | `ai.engine.timeout` | 120s | AI engine request timeout |
 | `trading.mode` | MANUAL | Initial trading mode |
 | `trading.poll-interval-ms` | 60000 | Prediction polling interval (ms) |
-
----
-
-## Getting Started
-
-### Prerequisites
-- Docker & Docker Compose
-
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/Anishalfaoui/sorbot.git
-cd sorbot
-```
-
-### 2. Configure environment
-
-Create a `.env` file at the project root:
-
-```env
-DEFAULT_SYMBOL=BTCUSD
-VIRTUAL_ACCOUNT_INITIAL_BALANCE=10000
-```
-
-### 3. Start all services
-
-**Windows (PowerShell):**
-```powershell
-.\start.ps1
-```
-
-**Windows (CMD):**
-```cmd
-start.bat
-```
-
-**Manual Docker:**
-```bash
-docker compose build
-docker compose up -d
-```
-
-### 4. Access the dashboard
-
-Open [http://localhost:3000](http://localhost:3000) in your browser.
-
-### 5. Access the Database
-
-Sorbot uses a **PostgreSQL** database hosted on **Supabase** to store users, trades, predictions, and settings. You can inspect the database through the Supabase dashboard:
-
-**URL:** [https://supabase.com/dashboard](https://supabase.com/dashboard)
-
-Navigate to your project's **Table Editor** or **SQL Editor** to run queries such as:
-
-```sql
-SELECT * FROM users;
-SELECT * FROM trades;
-SELECT * FROM predictions;
-```
-
-### 6. Stop all services
-
-```cmd
-stop.bat
-```
-or
-```bash
-docker compose down
-```
 
 ---
 
